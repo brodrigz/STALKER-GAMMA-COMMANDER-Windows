@@ -194,6 +194,33 @@ def test_cli_help_contract():
     assert "--progress-update-interval-ms" not in result.stdout
 
 
+def test_all_desktop_pages_construct_on_windows(monkeypatch):
+    from PySide6.QtWidgets import QApplication
+
+    from commander_gui import gui_settings
+    from commander_gui.ui.common import BackgroundTask
+    from commander_gui.ui.main_window import NAV_ITEMS, MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    # This smoke test constructs real widgets; backend jobs are covered
+    # separately and must not query the user's installed CLI profiles here.
+    monkeypatch.setattr(BackgroundTask, "start", lambda self: None)
+    gui_settings.save_gui_settings(welcome_hidden=True)
+    window = MainWindow()
+    try:
+        for name, _ in NAV_ITEMS:
+            window._ensure_page(name)
+        window._ensure_page("settings")
+        play = window._pages["play"]
+        assert play.runner_combo.currentData() == "native"
+        assert play._releases == []
+        assert window._pages["install"].winetricks_button.isEnabled()
+        assert window._pages["install"].winetricks_button.text() == "Set up Windows runtimes"
+        assert list(window._pages["systemcheck"]._sections) == ["Windows"]
+    finally:
+        window.close()
+        window.deleteLater()
+        app.sendPostedEvents()
 
 
 def test_native_entry_point_runs_event_loop(tmp_path):

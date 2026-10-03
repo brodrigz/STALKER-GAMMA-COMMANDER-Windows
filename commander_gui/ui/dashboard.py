@@ -294,6 +294,12 @@ class DashboardPage(QWidget):
             "Dependencies", tr("Checking..."), ok=None, pending_text=tr("Checking")
         )
         layout.addWidget(self.winetricks_status)
+        if os.name == "nt":
+            from ..windows_runtimes import check_runtimes, runtime_summary
+
+            ready, summary = runtime_summary(check_runtimes())
+            self.winetricks_status.set_state(ready, summary)
+            return
         if op == "dependencies":
             self.winetricks_status.set_installing(tr("Installing dependencies..."))
         else:

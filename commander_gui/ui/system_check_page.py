@@ -646,12 +646,17 @@ class SystemCheckPage(QWidget):
         self.refresh_button.setObjectName("primary")
         self.refresh_button.clicked.connect(self.refresh)
         header.addWidget(self.refresh_button)
+        if os.name == "nt":
+            setup_button = QPushButton("Set up runtimes")
+            setup_button.clicked.connect(self._setup_windows_runtimes)
+            header.addWidget(setup_button)
         check_layout.addLayout(header)
 
         check_layout.addWidget(self.checking_bar)
 
         self._sections: dict[str, QVBoxLayout] = {}
-        for section_title, _labels in CHECK_SECTIONS:
+        sections = (("Windows", ()),) if os.name == "nt" else CHECK_SECTIONS
+        for section_title, _labels in sections:
             section = QWidget()
             section.setObjectName("checkSection")
             section_layout = QVBoxLayout(section)
@@ -689,6 +694,7 @@ class SystemCheckPage(QWidget):
         ):
             self._add_override_row(override_layout, key, label, directory)
         root.addWidget(override_card)
+        override_card.setVisible(os.name != "nt")
         root.addStretch(1)
 
         self._set_all_checking()
@@ -707,21 +713,37 @@ class SystemCheckPage(QWidget):
         if self._task is None and not self._settling and time.monotonic() - last > 60:
             self.refresh()
 
+    def _setup_windows_runtimes(self):
+        from .runtime_setup import show_runtime_setup
+
+        show_runtime_setup(self.window, self)
+        self.refresh()
+
     def refresh(self) -> None:
         if os.name == "nt":
-            self.summary.setText(
-                tr("System check is only relevant on Linux; this Windows install runs the game natively.")
-            )
+            from ..config import cli_binary_path, settings_dir
+            from ..windows_runtimes import check_runtimes, runtime_summary
+
+            checks = check_runtimes()
+            ready, summary = runtime_summary(checks)
+            self.summary.setText("Windows prerequisites ready" if ready else summary + " — use Set up runtimes.")
             for layout in self._sections.values():
                 clear_layout(layout)
-            self._add_row(
-                next(iter(self._sections.values())),
-                "Windows",
-                tr("No Wine/Proton tooling required."),
-                "ready",
-                "",
-            )
-            self.refresh_button.setEnabled(False)
+            layout = next(iter(self._sections.values()))
+            binary = cli_binary_path()
+            for label, path in (
+                ("Installer backend", binary),
+                ("Archive helper", binary.parent / "resources" / "7zz.exe"),
+                ("7-Zip library", binary.parent / "resources" / "7z.dll"),
+            ):
+                self._add_row(layout, label, str(path), "ready" if path.is_file() else "missing", "")
+            self._add_row(layout, "Settings", str(settings_dir()), "ready", "")
+            for check in checks:
+                state = "ready" if check.installed else ("unknown" if check.installed is None else "missing")
+                self._add_row(layout, check.name, check.detail, state, "")
+            self._last_check_ts = time.monotonic()
+            self.last_checked_label.setText("Checked just now")
+            self.refresh_button.setEnabled(True)
             return
         if self._task is not None:
             return

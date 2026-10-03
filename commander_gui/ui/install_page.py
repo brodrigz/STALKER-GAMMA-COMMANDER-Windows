@@ -560,6 +560,8 @@ class InstallPage(QWidget):
         )
         dd_grid.addWidget(
             info_label(
+                tr("Check and install the Visual C++ and DirectX runtimes required by the game.")
+                if os.name == "nt" else
                 tr("<span style='color:{arg};'>Step 2.</span> Install required dependencies - Downloads Visual C++, DirectX and winetricks runtimes.", arg=ACCENT.name())
             ),
             1, 2,
@@ -588,6 +590,9 @@ class InstallPage(QWidget):
             tr("Installs required Windows runtime components (VC++, DirectX, etc.) into the Wine prefix.")
         )
         self.winetricks_button.clicked.connect(self._start_winetricks)
+        if os.name == "nt":
+            self.winetricks_button.setText("Set up Windows runtimes")
+            self.winetricks_button.setToolTip("Check prerequisites and install missing components from Microsoft.")
         dd_grid.addWidget(self.winetricks_button, 3, 2)
 
         self.wt_progress = ProgressArea(show_table=False, show_log=True, log_max_height=180)
@@ -795,7 +800,9 @@ class InstallPage(QWidget):
         else:
             self._update_cache_info("")
         self._update_install_status()
-        self.wt_prefix_label.setText(tr("Prefix: {arg}", arg=self._wt_prefix()))
+        self.wt_prefix_label.setText(
+            "Native Windows" if os.name == "nt" else tr("Prefix: {arg}", arg=self._wt_prefix())
+        )
         self._refresh_winetricks_status()
         self._update_button_states()
 
@@ -850,7 +857,7 @@ class InstallPage(QWidget):
         )
         self.verify_button.setEnabled(not mo2_running() and not VERIFY_INTEGRITY_DISABLED)
         self.winetricks_button.setEnabled(
-            self._wt_installed is False and not mo2_running()
+            (os.name == "nt" or self._wt_installed is False) and not mo2_running()
         )
         self.anomaly_browse.setEnabled(True)
         self.gamma_browse.setEnabled(True)
@@ -2626,6 +2633,18 @@ class InstallPage(QWidget):
         self._update_button_states()
 
     def _refresh_winetricks_status(self):
+        if os.name == "nt":
+            from ..windows_runtimes import check_runtimes, runtime_summary
+
+            if getattr(self.window, "install_operation", None) == "dependencies":
+                self.wt_status.set_installing("Installing runtimes...")
+                return
+            checks = check_runtimes()
+            self._wt_installed, summary = runtime_summary(checks)
+            self.wt_status.set_state(self._wt_installed, summary)
+            self.wt_status.set_status_tooltip("\n".join(f"{c.name}: {c.detail}" for c in checks))
+            self.wt_progress.status_label.setText(summary)
+            return
         if not self._winetricks_status_enabled:
             return
         if self._wt_checking:
@@ -2681,6 +2700,13 @@ class InstallPage(QWidget):
         self._update_button_states()
 
     def _start_winetricks(self):
+        if os.name == "nt":
+            from .runtime_setup import show_runtime_setup
+
+            show_runtime_setup(self.window, self)
+            self._refresh_winetricks_status()
+            self._update_button_states()
+            return
         self._winetricks_status_enabled = True
         if self._wt_runner is not None and self._wt_runner.is_running():
             return
