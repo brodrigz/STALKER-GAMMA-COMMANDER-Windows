@@ -38,11 +38,13 @@ def run(args: list[str]) -> int:
             "commander_gui/fonts/Exo2-Variable.ttf", "assistant/fonts/Exo2-Variable.ttf",
             "cli/stalker-gamma.png", "cli/windows-backend.json",
             "cli/windows/stalker-gamma.exe", "cli/windows/resources/7zz.exe",
-            "cli/windows/resources/7z.dll", "cli/windows/resources/cloudscraper.exe",
+            "cli/windows/resources/7z.dll",
             "cli/windows/cacert.pem", "cli/windows/libcurl-impersonate.dll",
         ):
             assert (root / relative).is_file(), f"Missing packaged resource: {relative}"
         checks.append("resources")
+        assert not (root / "cli/windows/resources/cloudscraper.exe").exists(), "Unused experimental server was bundled"
+        checks.append("unused cloudscraper executable excluded")
 
         if assistant:
             from assistant import __main__ as entry

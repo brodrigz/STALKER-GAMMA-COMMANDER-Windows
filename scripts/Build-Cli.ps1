@@ -9,7 +9,15 @@ $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'cli/windows-backend.j
 $backendDir = Join-Path $repoRoot 'cli/windows'
 $stampPath = Join-Path $backendDir 'commander-cli-build.json'
 $sourceArchive = Join-Path $repoRoot 'cli/windows-source.zip'
-$required = @($manifest.executable, $manifest.archiver, 'resources/7z.dll', 'resources/cloudscraper.exe', 'libcurl-impersonate.dll', 'git2-3f4182d.dll', 'cacert.pem', 'CLI-LICENSE.txt')
+$required = @($manifest.executable, $manifest.archiver, 'resources/7z.dll', 'libcurl-impersonate.dll', 'git2-3f4182d.dll', 'cacert.pem', 'CLI-LICENSE.txt')
+function Remove-UnusedCliHelper {
+    # Commander uses its own browser bridge, not the CLI's experimental Python server.
+    # Clean cached backends too, so older builds cannot carry this helper forward.
+    $legacyHelper = Join-Path $backendDir 'resources/cloudscraper.exe'
+    if (Test-Path -LiteralPath $legacyHelper -PathType Leaf) {
+        Remove-Item -LiteralPath $legacyHelper -Force
+    }
+}
 # A release build must never silently replace our executable with the upstream one.
 if (-not $Force -and (Test-Path -LiteralPath $stampPath) -and (Test-Path -LiteralPath $sourceArchive)) {
     $stamp = Get-Content -LiteralPath $stampPath -Raw | ConvertFrom-Json
@@ -17,6 +25,7 @@ if (-not $Force -and (Test-Path -LiteralPath $stampPath) -and (Test-Path -Litera
     if ($missing.Count -eq 0 -and $stamp.source_revision -eq $manifest.source_revision -and
         $stamp.version -eq $manifest.version -and
         $stamp.executable_sha256 -eq (Get-FileHash -LiteralPath (Join-Path $backendDir $manifest.executable) -Algorithm SHA256).Hash.ToLowerInvariant()) {
+        Remove-UnusedCliHelper
         Write-Host "Pinned Commander CLI $($manifest.version) is already built."
         return
     }
@@ -58,6 +67,7 @@ if (-not (Test-Path -LiteralPath $archive) -or
     Invoke-WebRequest -Uri $dependency.url -OutFile $archive
 }
 & (Join-Path $CliSource 'build/win/Build-CommanderCli.ps1') -OutputDirectory $backendDir -DependenciesArchive $archive -DotnetPath $dotnet -Version $manifest.version
+Remove-UnusedCliHelper
 & git -c $gitSafety -C $CliSource archive --format=zip --output=$sourceArchive HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Could not archive the CLI sources.' }
 foreach ($file in $required) {

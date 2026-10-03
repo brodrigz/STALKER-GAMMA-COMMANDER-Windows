@@ -12,9 +12,15 @@ datas = [
     (str(repo / "assistant" / "fonts" / "Exo2-Variable.ttf"), "assistant/fonts"),
     (str(repo / "cli" / "stalker-gamma.png"), "cli"),
     (str(repo / "cli" / "windows-backend.json"), "cli"),
-    # Include our compiled CLI with its DLLs and native resource helpers.
-    (str(repo / "cli" / "windows"), "cli/windows"),
     (str(repo / "commander_gui" / "_vendor" / "CF-Clearance-Scraper-LICENSE.txt"), "commander_gui/_vendor"),
+]
+# Enumerate the backend explicitly so direct PyInstaller builds also omit the
+# upstream experimental Python server, even if an older cache still contains it.
+backend = repo / "cli" / "windows"
+datas += [
+    (str(path), str(Path("cli/windows") / path.relative_to(backend).parent))
+    for path in sorted(backend.rglob("*"))
+    if path.is_file() and path.name.lower() != "cloudscraper.exe"
 ]
 datas += collect_data_files("ua_parser")
 datas += collect_data_files("grapheme") + collect_data_files("emoji")
