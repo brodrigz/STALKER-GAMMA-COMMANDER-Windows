@@ -7,6 +7,7 @@ GUI. Quick commands use a simple synchronous helper.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
@@ -98,6 +99,7 @@ class CliWorker(QObject):
         self._cwd = ""
         self._env: dict[str, str] | None = None
         self._cancel_event = threading.Event()
+        self._moddb_bridge = None
         self._pause_lock = threading.RLock()
         self._paused_tree = None
 
@@ -121,6 +123,9 @@ class CliWorker(QObject):
                     except OSError as exc:
                         self.line_ready.emit(f"Could not release paused helpers: {exc}")
                     self._paused_tree = None
+            if self._moddb_bridge is not None:
+                self._moddb_bridge.close()
+                self._moddb_bridge = None
 
     def _run_command(self) -> None:
         """Run the command, streaming stdout.
@@ -144,6 +149,14 @@ class CliWorker(QObject):
             self.finished.emit(SPAWN_FAILED_RC, "No command specified")
             return
         try:
+            if os.name == "nt":
+                from .moddb_session import ACCESS_PREFIX, STATUS_PREFIX, ModDbBridge
+
+                self._moddb_bridge = ModDbBridge(
+                    lambda message: self.line_ready.emit(STATUS_PREFIX + message),
+                    access_changed=lambda state: self.line_ready.emit(ACCESS_PREFIX + json.dumps(state)),
+                )
+                env.update(self._moddb_bridge.start())
             self._process = subprocess.Popen(
                 command,
                 cwd=cwd or None,
@@ -201,6 +214,8 @@ class CliWorker(QObject):
 
     @Slot()
     def cancel(self) -> None:
+        if self._moddb_bridge is not None:
+            self._moddb_bridge.session.stop()
         proc = self._process
         if proc is None or proc.poll() is not None:
             # The process has not been spawned yet (or already exited); run()
@@ -246,6 +261,10 @@ class CliWorker(QObject):
             except OSError:
                 pass
 
+    def verify_moddb(self) -> bool:
+        bridge = self._moddb_bridge
+        return bridge.session.approve_verification() if bridge is not None else False
+
     def pause(self) -> bool:
         """Pause the owned CLI and helpers without discarding their state."""
         proc = self._process
@@ -282,6 +301,8 @@ class CliWorker(QObject):
 
     @Slot()
     def kill(self) -> None:
+        if self._moddb_bridge is not None:
+            self._moddb_bridge.session.stop()
         proc = self._process
         if proc is not None and proc.poll() is None:
             try:

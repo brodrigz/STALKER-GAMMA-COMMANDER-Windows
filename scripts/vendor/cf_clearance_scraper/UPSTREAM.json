@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/Xewdy444/CF-Clearance-Scraper",
+  "revision": "7bf176d1956d3fb6971f9d95c1bbee2f3a4f7d01",
+  "sha256": {
+    "main.py": "aa998f48ecdc33ed3e5c658c9d6a01a163c0602d9cc2453870f0ed1ea69983a8",
+    "LICENSE": "0266634a619dc5f65689110c53cfa961885ec100d670d5c4f33444b02c7cd659",
+    "requirements.txt": "c2e2ee411413e7ea06383c5687459ec2fcd0ddb77b10cc3065fd9a14403bb665",
+    "README.md": "eb7987ac382eba97ed83b3a31944712b43d00848a1a660a3b345e8529afb3e8d"
+  }
+}

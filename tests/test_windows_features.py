@@ -237,3 +237,30 @@ def test_runtime_recheck_button_and_failed_setup_release_busy(app, monkeypatch):
     assert not dialog._running
     assert "fixture download failure" in dialog.status.text()
     dialog.deleteLater()
+
+
+def test_cloudflare_status_visible_with_console_hidden(app):
+    from commander_gui.moddb_session import ACCESS_PREFIX
+    from commander_gui.ui.common import ProgressArea
+
+    area = ProgressArea(auto_expand_log=False)
+    runner = Mock()
+    runner.verify_moddb.return_value = True
+    area.set_runner(runner)
+    area.on_started()
+    area.on_line(ACCESS_PREFIX + json.dumps({"state": "required", "message": "HTTP 403: verify to continue."}))
+    assert area.log.isHidden()
+    assert not area.moddb_access.isHidden()
+    assert "Verification required" in area.moddb_access.status.text()
+    assert area.moddb_access.button.isEnabled()
+    runner.verify_moddb.assert_not_called()
+    area.moddb_access.button.click()
+    runner.verify_moddb.assert_called_once()
+    assert not area.moddb_access.button.isEnabled()
+    area.on_line(ACCESS_PREFIX + json.dumps({"state": "ready", "message": "Cookie accepted"}))
+    assert "Cookie accepted" in area.moddb_access.status.text()
+    area.on_finished(1, "cancelled")
+    area.on_line(ACCESS_PREFIX + json.dumps({"state": "required", "message": "late event"}))
+    assert not area.moddb_access.button.isEnabled()
+    assert "Session ended" in area.moddb_access.status.text()
+    area.deleteLater()

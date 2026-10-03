@@ -791,6 +791,9 @@ class CommandRunner(QObject):
             if running and not _SHUTTING_DOWN:
                 self.cancelled.emit()
 
+    def verify_moddb(self) -> bool:
+        return self._worker.verify_moddb() if self._worker is not None else False
+
     def pause(self) -> bool:
         """Pause the worker and its owned helpers."""
         return self._worker.pause() if self._worker is not None else False
@@ -1821,6 +1824,10 @@ class ProgressArea(QWidget):
         self.status_label = QLabel(self._status_idle)
         self.status_label.setObjectName("info")
 
+        from .moddb_access import ModDbAccessPanel
+
+        self.moddb_access = ModDbAccessPanel(self._verify_moddb, self)
+        self.moddb_access.setVisible(os.name == "nt" and show_table)
         self.connection_notice = QLabel()
         self.connection_notice.setObjectName("info")
         self.connection_notice.setWordWrap(True)
@@ -1888,6 +1895,7 @@ class ProgressArea(QWidget):
         layout.addSpacing(2)
         layout.addWidget(self.status_label)
         layout.addWidget(self.connection_notice)
+        layout.addWidget(self.moddb_access)
         if show_table:
             # Tight, matching the log-toggle gap below - pulls the addon
             # table (Addon/Operation/Percent) up right under the bar and
@@ -1983,6 +1991,7 @@ class ProgressArea(QWidget):
 
     def reset(self) -> None:
         self.connection_notice.hide()
+        self.moddb_access.reset()
         self.bar.setRange(0, 1)
         self.bar.setValue(0)
         self.bar.setFormat(self._bar_idle_format)
@@ -2009,6 +2018,9 @@ class ProgressArea(QWidget):
         self._paused = False
         self.pause_button.setText(tr("Pause"))
         self.pause_button.setVisible(runner is not None)
+
+    def _verify_moddb(self) -> bool:
+        return self._runner.verify_moddb() if self._runner is not None else False
 
     def set_concurrency(self, threads: int) -> None:
         """Forward the configured download-thread count to the addon table.
@@ -2043,6 +2055,8 @@ class ProgressArea(QWidget):
 
     def on_line(self, line: str) -> None:
         clean = strip_ansi(line)
+        if self.moddb_access.consume_line(clean):
+            return
         if clean.startswith("@commander-status "):
             message = clean.removeprefix("@commander-status ")
             self.connection_notice.setText(message)
@@ -2141,6 +2155,7 @@ class ProgressArea(QWidget):
         self.status_label.setText(text)
 
     def on_started(self) -> None:
+        self.moddb_access.start()
         self.cancel_button.show()
         self.cancel_button.setEnabled(True)
         self.cancel_button.setText(tr("Cancel"))
@@ -2156,6 +2171,7 @@ class ProgressArea(QWidget):
             self._show_log()
 
     def on_finished(self, rc: int, output: str) -> None:
+        self.moddb_access.finish()
         self.connection_notice.hide()
         self.cancel_button.hide()
         self.pause_button.hide()
@@ -2184,6 +2200,7 @@ class ProgressArea(QWidget):
 
     def on_cancelled(self) -> None:
         """Reset the bar/buttons to an idle Cancelled state (keeps the log)."""
+        self.moddb_access.finish()
         self.connection_notice.hide()
         self.cancel_button.hide()
         self.pause_button.hide()
@@ -2198,6 +2215,7 @@ class ProgressArea(QWidget):
 
     def set_success_state(self, text: str = "Verified successfully") -> None:
         """Show a successful completed state using the install-bar styling."""
+        self.moddb_access.finish()
         from ..themes import active_theme_tokens
 
         self.cancel_button.hide()
