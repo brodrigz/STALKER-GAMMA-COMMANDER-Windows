@@ -1,3 +1,16 @@
+## What this fork adds
+
+- Native Windows launching, portable ZIPs and installer packages.
+- Support for existing GAMMA installations and MO2 profiles through our [custom CLI](https://github.com/brodrigz/stalker-gamma-cli).
+- Replaces obsolete modpack API URLs with the official GitHub catalogue while preserving custom sources.
+- Per-addon download progress and speed, pause/resume, and resizable panels.
+- Cloudflare status and browser verification on demand, with resumable downloads.
+- Windows runtime checks/setup and native desktop notifications.
+
+Windows is the supported target; Linux compatibility is not maintained.
+
+---
+
 # STALKER GAMMA COMMANDER — Windows fork
 
 Native Windows port in development. The first implementation milestone keeps
