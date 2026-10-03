@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QTabBar,
     QVBoxLayout,
@@ -597,6 +598,19 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._on_nav)
         self.tabs.tabBarClicked.connect(self._on_tab_clicked)
         layout.addWidget(header)
+        self.verification_banner = QWidget()
+        self.verification_banner.setObjectName("verificationBanner")
+        self.verification_banner.setStyleSheet("#verificationBanner { background: #42331d; border: 1px solid #e9b45c; border-radius: 6px; }")
+        banner_layout = QHBoxLayout(self.verification_banner)
+        banner_text = QLabel("⚠ Downloads need Cloudflare verification. Your download progress is saved.")
+        banner_text.setWordWrap(True)
+        banner_text.setStyleSheet("color: #ffe0a6; font-weight: bold;")
+        banner_layout.addWidget(banner_text, 1)
+        review_button = QPushButton("Review verification")
+        review_button.clicked.connect(self._review_verification)
+        banner_layout.addWidget(review_button)
+        self.verification_banner.hide()
+        layout.addWidget(self.verification_banner)
         layout.addWidget(self.stack, 1)
         self.setCentralWidget(central)
 
@@ -608,6 +622,28 @@ class MainWindow(QMainWindow):
         self.setMinimumWidth(header_width)
         if self.width() < header_width:
             self.resize(header_width, self.height())
+
+    def set_verification_required(self, required):
+        self.verification_banner.setVisible(required)
+
+    def _review_verification(self):
+        service = getattr(QApplication.instance(), "_desktop_notifications", None)
+        if service is not None:
+            service._show_window()
+
+    def reveal_verification(self, panel):
+        for key, page in self._pages.items():
+            if page.isAncestorOf(panel):
+                self.close_settings()
+                self.set_page(key)
+                self.stack.setCurrentWidget(page)
+                parent = panel.parentWidget()
+                while parent is not None and parent is not page:
+                    if isinstance(parent, QScrollArea):
+                        QTimer.singleShot(0, lambda scroll=parent: scroll.ensureWidgetVisible(panel))
+                    parent = parent.parentWidget()
+                panel.button.setFocus(Qt.FocusReason.OtherFocusReason)
+                return
 
     def _build_status_bar(self) -> None:
         """Build the persistent status bar contents exactly once.
@@ -1331,7 +1367,7 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 tr("Install Running"),
-                tr("An installation, verification, update, or dependency download is currently running. Are you sure you want to close?\n\nThis will terminate the running process and may leave the prefix partially configured."),
+                tr("An installation, verification, update, or dependency download is currently running. Are you sure you want to exit?\n\nThis will stop the running operation. Saved download progress will be kept, but installation may be incomplete."),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if answer != QMessageBox.StandardButton.Yes:

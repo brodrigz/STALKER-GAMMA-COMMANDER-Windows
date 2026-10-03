@@ -5,6 +5,7 @@
 - Replaces obsolete modpack API URLs with the official GitHub catalogue while preserving custom sources.
 - Per-addon download progress and speed, pause/resume, and resizable panels.
 - Cloudflare status and browser verification on demand, with resumable downloads.
+- Persistent Windows tray: minimize or close keeps downloads running; right-click the tray icon and choose Exit to quit. Notifications report completed installs/updates and required Cloudflare verification, with a persistent in-app warning.
 
 Windows is the supported target; Linux compatibility is not maintained.
 

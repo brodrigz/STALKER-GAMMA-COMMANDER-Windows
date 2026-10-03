@@ -8,6 +8,7 @@ out to ``update apply``, whose output is surfaced in the progress log.
 
 from __future__ import annotations
 
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -819,11 +820,11 @@ class UpdatePage(QWidget):
             if profile is not None:
                 invalidate_baseline(profile.gamma)
         is_active = getattr(self.window, "isActiveWindow", lambda: True)()
-        if not cancelled and not is_active:
+        if not cancelled and (os.name == "nt" or not is_active):
             if cli_ok(rc, output, ""):
                 notify_desktop(
                     tr("GAMMA update finished"),
-                    tr("The GAMMA update was applied successfully."),
+                    tr("All addon downloads and the update are complete. Open Play to launch GAMMA."),
                 )
             else:
                 notify_desktop(

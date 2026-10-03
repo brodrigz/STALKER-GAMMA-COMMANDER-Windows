@@ -1343,14 +1343,14 @@ class InstallPage(QWidget):
                     self.window.statusBar().showMessage(note, 8000)
         # Only for a run that's actually done (not cancelled - the user
         # already knows - and not a failure that's about to silently
-        # auto-retry, handled by the early return above), and only while
-        # the user isn't already looking at the window watching it finish.
+        # auto-retry, handled by the early return above).
+        # Windows also reports completion while the window is active.
         is_active = getattr(self.window, "isActiveWindow", lambda: True)()
-        if not cancelled and not is_active:
+        if not cancelled and (os.name == "nt" or not is_active):
             if cli_ok(rc, output, ""):
                 notify_desktop(
                     tr("GAMMA install finished"),
-                    tr("The GAMMA installation completed successfully."),
+                    tr("All addon downloads and installation are complete. Open Play to launch GAMMA."),
                 )
             else:
                 notify_desktop(
@@ -1640,10 +1640,9 @@ class InstallPage(QWidget):
         # Only for a run that's actually done (not chaining into GAMMA,
         # where _on_full_finished's own notification covers the eventual
         # outcome instead) and not cancelled - the user already knows -
-        # and only while the user isn't already looking at the window
-        # watching it finish.
+        # Windows also reports completion while the window is active.
         is_active = getattr(self.window, "isActiveWindow", lambda: True)()
-        if not cancelled and not is_active:
+        if not cancelled and (os.name == "nt" or not is_active):
             if install_ok:
                 notify_desktop(
                     tr("Anomaly install finished"),

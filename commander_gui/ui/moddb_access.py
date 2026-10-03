@@ -5,7 +5,14 @@ import time
 from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..moddb_session import ACCESS_PREFIX
 
@@ -13,6 +20,8 @@ from ..moddb_session import ACCESS_PREFIX
 class ModDbAccessPanel(QWidget):
     def __init__(self, verify, parent=None):
         super().__init__(parent)
+        self.setObjectName("moddbAccess")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._verify = verify
         self._state = "idle"
         self._active = False
@@ -27,7 +36,7 @@ class ModDbAccessPanel(QWidget):
         self.instructions.setTextFormat(Qt.TextFormat.PlainText)
         self.instructions.setWordWrap(True)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 6, 0, 8)
+        layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(2)
         row = QHBoxLayout()
         row.addWidget(self.status)
@@ -55,6 +64,15 @@ class ModDbAccessPanel(QWidget):
         if self._state in {"required", "failed", "verifying"}:
             self.instructions.setText("This operation ended. Start it again to verify and continue from saved download progress.")
         self.status.setText("Cloudflare: Session ended")
+        self._update_attention()
+
+    def _update_attention(self):
+        required = self._active and self._state in {"required", "failed"}
+        self.setStyleSheet("#moddbAccess { background: #42331d; border: 1px solid #e9b45c; border-radius: 6px; }" if required else "")
+        self.button.setText("Verify now in browser" if required else "Verify in browser")
+        service = getattr(QApplication.instance(), "_desktop_notifications", None)
+        if service is not None:
+            service.set_verification_required(self, required)
 
     def _set_state(self, state, message, expires=None):
         labels = {"idle": "Not checked", "required": "Verification required", "verifying": "Verifying…",
@@ -63,10 +81,11 @@ class ModDbAccessPanel(QWidget):
             return
         self._state = state
         self._expires = expires if isinstance(expires, (int, float)) and expires > 0 else None
-        self.status.setText("Cloudflare: " + labels[state])
+        self.status.setText(("⚠ " if state in {"required", "failed"} else "") + "Cloudflare: " + labels[state])
         self.instructions.setText(message)
         self.button.setEnabled(self._active and state in {"required", "failed"})
         self.status.setStyleSheet("color: #e9b45c;" if state in {"required", "failed"} else "")
+        self._update_attention()
         if state == "ready" and self._expires:
             try:
                 until = datetime.fromtimestamp(self._expires, timezone.utc).astimezone().strftime("%H:%M")

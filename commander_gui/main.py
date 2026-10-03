@@ -403,6 +403,8 @@ def main(argv: list[str] | None = None) -> int:
         window.show_for_environment()
     else:
         window = MainWindow()
+        if os.name == "nt":
+            initialize_notifications(app).attach_window(window)
         window.show()
     # A session where the user deliberately toggles modes a few times must not
     # look like a relaunch loop to deck_launch's depth guard.

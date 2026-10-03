@@ -1271,12 +1271,8 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("Title", args)
         self.assertIn("Message", args)
 
-    def test_on_full_finished_notifies_only_when_the_window_is_not_active(self):
-        """Regression test: a finished/failed GAMMA install must surface a
-
-        desktop notification when the user has alt-tabbed away, but not
-        spam one while they're already watching the progress bar finish.
-        """
+    def test_on_full_finished_notifies_on_windows_or_when_inactive(self):
+        """Windows reports terminal completion even while foregrounded."""
         from commander_gui.ui.install_page import InstallPage
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1313,7 +1309,10 @@ class RegressionTests(unittest.TestCase):
             with patch("commander_gui.ui.install_page.notify_desktop") as mock_notify:
                 window.active = True
                 page._on_full_finished(0, "Install complete!")
-            mock_notify.assert_not_called()
+            if os.name == "nt":
+                mock_notify.assert_called_once()
+            else:
+                mock_notify.assert_not_called()
 
             with patch("commander_gui.ui.install_page.notify_desktop") as mock_notify:
                 window.active = False
