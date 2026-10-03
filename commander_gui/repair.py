@@ -48,6 +48,7 @@ class ModPackRecord:
     zip_name: str
     md5_mod_db: str
     instructions: str
+    checksum_known: bool = True
 
     @property
     def folder_name(self) -> str:

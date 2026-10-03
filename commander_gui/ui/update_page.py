@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..cli_import import prepare_update_snapshot
 from ..cli_runner import cli_command
 from ..game_backup import backup_settings_before
 from ..integrity import invalidate_baseline
@@ -769,6 +770,12 @@ class UpdatePage(QWidget):
             )
             return
 
+        try:
+            import_message = prepare_update_snapshot(profile)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, tr("Cannot prepare update"), str(exc))
+            return
+
         self._snapshot_modlist_before_update()
         backup_error = backup_settings_before(profile, "update")
 
@@ -784,6 +791,9 @@ class UpdatePage(QWidget):
         # Holds the global lock for the duration: this writes the install tree.
         self.window.set_install_busy(True, "gamma")
         self.apply_progress.reset()
+        self.apply_progress.set_concurrency(profile.download_threads)
+        if import_message:
+            self.apply_progress.log.append_line(import_message)
         if backup_error:
             self.apply_progress.log.append_line(f"Settings backup failed: {backup_error}")
         self._apply_runner = CommandRunner(

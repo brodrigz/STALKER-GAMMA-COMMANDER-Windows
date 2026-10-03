@@ -15,18 +15,25 @@ that API:
 
 from __future__ import annotations
 
+import configparser
 import json
 import re
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .i18n import tr
+from .install_layout import WINDOWS_INSTALLER
 from .network import read_response_bytes
 from .network import urlopen_with_retry as urlopen
 from .parsers import UpdateDiff
-from .repair import USER_AGENT, ModPackRecord, parse_modpack_records
+from .repair import (
+    USER_AGENT,
+    ModPackRecord,
+    find_record_for_folder,
+    parse_modpack_records,
+)
 
 VERSION_FILENAME = "G.A.M.M.A_definition_version.txt"
 PATCHNOTES_FILENAME = "Patchnotes.md"
@@ -61,6 +68,7 @@ class UpdateStatus:
     patchnotes: str | None = None
     diffs: list[UpdateDiff] = field(default_factory=list)
     error: str | None = None
+    note: str | None = None
 
     @property
     def update_available(self) -> bool:
@@ -118,22 +126,26 @@ def status_summary(status: UpdateStatus) -> tuple[str, str]:
         if status.error:
             # The version is newer, but the per-addon list couldn't be read.
             text += "\n" + status.error
+        if status.note:
+            text += "\n" + status.note
         return text, "accent"
+    if status.note:
+        return tr("No updates detected") + "\n" + status.note, "dim"
     return tr("GAMMA is up to date"), "accent"
 
 
 def installed_version(gamma_dir: str | None) -> str | None:
-    """Return the installed GAMMA version from ``gamma/version.txt``."""
+    """Read the completed-install marker from CLI or Windows installer layouts."""
     if not gamma_dir:
         return None
-    try:
-        text = Path(gamma_dir, "version.txt").read_text(
-            encoding="utf-8", errors="replace"
-        )
-    except (OSError, ValueError, UnicodeError):
-        return None
-    version = text.strip()
-    return version or None
+    for path in (Path(gamma_dir, "version.txt"), Path(gamma_dir, WINDOWS_INSTALLER, "version.txt")):
+        try:
+            version = path.read_text(encoding="utf-8-sig").strip()
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if version:
+            return version
+    return None
 
 
 def _repo_owner_and_name(profile) -> tuple[str, str]:
@@ -515,7 +527,7 @@ def _json_text(entry: dict, key: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def local_modpack_records(
+def _profile_modpack_records(
     gamma_dir: str, mo2_profile: str
 ) -> dict[str, ModPackRecord] | None:
     """Records of what this install contains, or None if the profile has none.
@@ -524,17 +536,19 @@ def local_modpack_records(
     profile after a full install. The TSV is preferred; the JSON is parsed when
     only it exists.
     """
+    if not mo2_profile or mo2_profile in {".", ".."} or "/" in mo2_profile or "\\" in mo2_profile:
+        return None
     profile_dir = Path(gamma_dir, "profiles", mo2_profile)
     txt_path = profile_dir / "modpack_maker_list.txt"
     json_path = profile_dir / "modpack_maker_list.json"
     try:
         if txt_path.is_file():
             return parse_modpack_records(
-                txt_path.read_text(encoding="utf-8", errors="replace")
+                txt_path.read_text(encoding="utf-8-sig", errors="replace")
             )
         if json_path.is_file():
             records: dict[str, ModPackRecord] = {}
-            entries = json.loads(json_path.read_text(encoding="utf-8"))
+            entries = json.loads(json_path.read_text(encoding="utf-8-sig"))
             if not isinstance(entries, list):
                 return None
             for counter, entry in enumerate(entries, start=1):
@@ -543,15 +557,19 @@ def local_modpack_records(
                 addon = _json_text(entry, "addonName")
                 if not addon:
                     continue
+                patch = _json_text(entry, "patch")
+                if patch and not patch.startswith("- "):
+                    patch = "- " + patch
                 record = ModPackRecord(
-                    counter=counter,
+                    counter=entry.get("commanderCounter", counter) if isinstance(entry.get("commanderCounter", counter), int) else counter,
                     addon_name=addon,
-                    patch=_json_text(entry, "patch"),
+                    patch=patch,
                     dl_link=_json_text(entry, "dlLink"),
                     mod_db_url=_json_text(entry, "modDbUrl"),
                     zip_name=_json_text(entry, "zipName"),
                     md5_mod_db=_json_text(entry, "md5ModDb"),
-                    instructions="",
+                    instructions=":".join(entry["instructions"]) if isinstance(entry.get("instructions"), list) and all(isinstance(item, str) for item in entry["instructions"]) else "0",
+                    checksum_known=entry.get("commanderChecksumKnown", True) is not False,
                 )
                 records[record.folder_name] = record
             return records
@@ -560,6 +578,52 @@ def local_modpack_records(
     except ValueError:
         return None
     return None
+
+
+def _windows_modpack_records(gamma_dir: str) -> dict[str, ModPackRecord] | None:
+    """Match Grok's cached catalogue to installed mod folders and archive names.
+
+    A cached catalogue can have been downloaded before an update completed.
+    Its hashes must never be presented as verified installed archive hashes.
+    The per-mod meta.ini supplies the archive version actually installed.
+    """
+    root = Path(gamma_dir)
+    installer = root / WINDOWS_INSTALLER
+    catalogue = {}
+    for path in (installer / "mods.txt", installer / "G.A.M.M.A/modpack_data/modpack_maker_list.txt"):
+        try:
+            catalogue = parse_modpack_records(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError):
+            continue
+        if catalogue:
+            break
+    if not catalogue:
+        return None
+    try:
+        folders = [folder for folder in (root / "mods").iterdir() if folder.is_dir()]
+    except OSError:
+        return None
+    records = {}
+    for folder in folders:
+        record = find_record_for_folder(folder.name, catalogue)
+        if record is None:
+            continue
+        metadata = configparser.ConfigParser(interpolation=None, strict=False)
+        try:
+            metadata.read_string((folder / "meta.ini").read_text(encoding="utf-8-sig"))
+            archive = metadata.get("General", "installationFile", fallback="").strip().strip('"')
+        except (OSError, UnicodeError, configparser.Error):
+            archive = ""
+        # Missing per-mod metadata means the installed archive is unknown.
+        archive = archive.replace("\\", "/").rsplit("/", 1)[-1]
+        records[folder.name] = replace(record, zip_name=archive, md5_mod_db="", checksum_known=False)
+    return records or None
+
+
+def local_modpack_records(gamma_dir: str, mo2_profile: str) -> dict[str, ModPackRecord] | None:
+    """Prefer the CLI's installed snapshot, then discover Windows installer data."""
+    records = _profile_modpack_records(gamma_dir, mo2_profile)
+    return records if records is not None else _windows_modpack_records(gamma_dir)
 
 
 def diff_records(
@@ -585,9 +649,12 @@ def diff_records(
         remote_record = remote_by_link[key]
         local_hash = (local_record.md5_mod_db or "").lower()
         remote_hash = (remote_record.md5_mod_db or "").lower()
-        archive_changed = local_record.zip_name != remote_record.zip_name
-        hash_changed = local_hash != remote_hash and (local_hash or remote_hash)
-        if not (archive_changed or hash_changed):
+        archive_changed = local_record.zip_name != remote_record.zip_name and (
+            local_record.checksum_known or bool(local_record.zip_name)
+        )
+        hash_changed = local_record.checksum_known and local_hash != remote_hash and (local_hash or remote_hash)
+        needs_verification = not local_record.checksum_known
+        if not (archive_changed or hash_changed or needs_verification):
             continue
         local_patch = (local_record.patch or "").strip()
         remote_patch = (remote_record.patch or "").strip()
@@ -599,13 +666,15 @@ def diff_records(
                 old=local_record.zip_name or "?",
                 new=remote_record.zip_name or "?",
             )
+        elif needs_verification:
+            detail = tr("Refresh required: installed checksum unknown")
         else:
             detail = tr("Archive updated")
         tooltip = tr(
             "MD5: {old} → {new}",
             old=local_hash or "(none)",
             new=remote_hash or "(none)",
-        )
+        ) if local_record.checksum_known else tr("Compared with the installed archive name; installed checksum unavailable.")
         diffs.append(
             UpdateDiff("Modified", local_record.folder_name, detail, tooltip)
         )
@@ -627,15 +696,19 @@ def check_updates(profile) -> UpdateStatus:
     local = local_modpack_records(gamma_dir, mo2_profile)
     if local is None:
         status.error = tr(
-            "No modpack list found in this profile. Run a full install so the "
-            "installer can generate the installed-addon list."
+            "Installed-addon metadata is unavailable. Check the GAMMA folder and MO2 profile in Profiles. "
+            "Version and release-note checks are still available."
         )
-        return status
+    elif any(not record.checksum_known for record in local.values()):
+        status.note = tr(
+            "Imported installation detected. Addons without recorded checksums will be refreshed "
+            "when updates are applied."
+        )
 
     remote: dict[str, ModPackRecord] = {}
     mod_pack_url = getattr(profile, "mod_pack_maker_url", "") or ""
-    list_failed = False
-    if mod_pack_url:
+    list_failed = local is None
+    if mod_pack_url and local is not None:
         try:
             req = urllib.request.Request(
                 mod_pack_url, headers={"User-Agent": USER_AGENT}
@@ -649,7 +722,7 @@ def check_updates(profile) -> UpdateStatus:
         except (OSError, ValueError, UnicodeError) as exc:
             status.error = tr("Could not reach the official mod list: {exc}", exc=exc)
             list_failed = True
-    else:
+    elif local is not None:
         status.error = tr("The profile has no modpack maker URL configured.")
         list_failed = True
 
@@ -675,6 +748,7 @@ def check_updates(profile) -> UpdateStatus:
     if status.installed and status.latest and status.installed == status.latest:
         status.installed_human = status.latest_human
     if not list_failed:
+        assert local is not None
         status.diffs = diff_records(local, remote)
     if not status.error and not status.latest and not status.diffs:
         status.error = tr(

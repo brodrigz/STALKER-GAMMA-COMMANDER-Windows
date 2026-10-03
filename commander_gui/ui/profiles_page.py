@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..install_layout import mo2_profiles, resolve_mo2_profile
 from ..modlist import seed_new_mo2_profile
 from ..profile_bundle import (
     ProfileBundleError,
@@ -239,7 +241,10 @@ class ProfilesPage(QWidget):
         self.anomaly_edit = QLineEdit()
         self.gamma_edit = QLineEdit()
         self.cache_edit = QLineEdit()
-        self.mo2_edit = QLineEdit()
+        self.mo2_combo = QComboBox()
+        self.mo2_combo.setEditable(True)
+        self.mo2_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.mo2_edit = self.mo2_combo.lineEdit()
         self.threads_spin = QSpinBox()
         self.threads_spin.setRange(1, 20)
 
@@ -296,7 +301,7 @@ class ProfilesPage(QWidget):
                 "The MO2 profile directory inside GAMMA/profiles (for example, "
                 "G.A.M.M.A). Creating a COMMANDER profile does not create an MO2 profile.",
             ),
-            self.mo2_edit,
+            self.mo2_combo,
         )
         self.form.addRow(
             field(
@@ -365,6 +370,7 @@ class ProfilesPage(QWidget):
 
         self._form_state = ""
         self.name_edit.textChanged.connect(self._update_save_button)
+        self.gamma_edit.editingFinished.connect(self._refresh_mo2_profiles)
         self.refresh()
 
     # ----- list -----
@@ -431,6 +437,7 @@ class ProfilesPage(QWidget):
         self.gamma_edit.setText(profile.gamma)
         self.cache_edit.setText(profile.cache)
         self.mo2_edit.setText(profile.mo2_profile)
+        self._refresh_mo2_profiles()
         self.threads_spin.setValue(profile.download_threads)
         self.modpack_edit.setText(profile.mod_pack_maker_url)
         self.modlist_edit.setText(profile.mod_list_url)
@@ -443,6 +450,19 @@ class ProfilesPage(QWidget):
         self.tg_url.setText(profile.teivaz_anomaly_gunslinger_repo_url)
         self.tg_branch.setText(profile.teivaz_anomaly_gunslinger_repo_branch)
         self._update_save_button()
+
+    def _refresh_mo2_profiles(self) -> None:
+        gamma = normalize_path(self.gamma_edit.text())
+        selected = resolve_mo2_profile(gamma, self.mo2_edit.text())
+        self.mo2_combo.blockSignals(True)
+        self.mo2_combo.clear()
+        for name, count in mo2_profiles(gamma).items():
+            self.mo2_combo.addItem(name)
+            self.mo2_combo.setItemData(
+                self.mo2_combo.count() - 1, tr("{count} mods", count=count), Qt.ItemDataRole.ToolTipRole
+            )
+        self.mo2_edit.setText(selected)
+        self.mo2_combo.blockSignals(False)
 
     def _form_values(self) -> CliProfile:
         profile = CliProfile()

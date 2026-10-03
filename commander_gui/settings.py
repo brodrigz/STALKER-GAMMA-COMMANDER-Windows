@@ -14,11 +14,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
+from urllib.parse import urlsplit
 
 from .atomic import write_text
 from .config import cli_binary_path, settings_path
+from .install_layout import resolve_mo2_profile
 
-DEFAULT_MOD_PACK_MAKER_URL = "https://stalker-gamma.com/api/client/v1/mods/list"
+DEFAULT_MOD_PACK_MAKER_URL = (
+    "https://raw.githubusercontent.com/Grokitach/Stalker_GAMMA/refs/heads/main/"
+    "G.A.M.M.A/modpack_data/modpack_maker_list.txt"
+)
 DEFAULT_MOD_LIST_URL = (
     "https://raw.githubusercontent.com/Grokitach/Stalker_GAMMA/refs/heads/main/"
     "G.A.M.M.A/modpack_data/modlist.txt"
@@ -197,6 +202,30 @@ def load_settings(path: Path | None = None) -> CliSettings:
         default = CliProfile(active=True)
         settings.profiles = [default]
         settings.save(path)
+    replacements = []
+    for profile in settings.profiles:
+        detected = resolve_mo2_profile(profile.gamma, profile.mo2_profile)
+        if detected != profile.mo2_profile:
+            replacements.append((profile, "mo2_profile", profile.mo2_profile))
+            profile.mo2_profile = detected
+        # Match our CLI's migration so the preview and apply use the same list.
+        try:
+            url = urlsplit(profile.mod_pack_maker_url)
+            obsolete = url.hostname == "stalker-gamma.com" and url.path.rstrip("/").lower() in {
+                "/api/client/v1/mods/list", "/api/list",
+            }
+        except ValueError:
+            obsolete = False
+        if obsolete:
+            replacements.append((profile, "mod_pack_maker_url", profile.mod_pack_maker_url))
+            profile.mod_pack_maker_url = DEFAULT_MOD_PACK_MAKER_URL
+    if replacements:
+        try:
+            settings.save(path)
+        except OSError:
+            # Keep the GUI and CLI in agreement when settings are read-only.
+            for profile, attribute, previous in replacements:
+                setattr(profile, attribute, previous)
     return settings
 
 
