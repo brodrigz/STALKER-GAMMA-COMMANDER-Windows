@@ -119,6 +119,23 @@ def test_game_started_during_download_prevents_installer(monkeypatch):
     run.assert_not_called()
 
 
+def test_windows_notification_delivery_uses_qt_queue(app, monkeypatch):
+    from commander_gui import notifications
+
+    tray = Mock()
+    factory = Mock(return_value=tray)
+    factory.isSystemTrayAvailable.return_value = True
+    factory.supportsMessages.return_value = True
+    factory.MessageIcon.Information = 1
+    monkeypatch.setattr(notifications, "QSystemTrayIcon", factory)
+    service = notifications.DesktopNotifications(app)
+    thread = threading.Thread(target=lambda: service.requested.emit("Download finished", "All addons installed"))
+    thread.start()
+    thread.join()
+    tray.showMessage.assert_not_called()
+    app.processEvents()
+    tray.showMessage.assert_called_once_with("Download finished", "All addons installed", 1, 10000)
+    service.deleteLater()
 
 
 

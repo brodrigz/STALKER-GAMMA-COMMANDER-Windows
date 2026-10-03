@@ -1565,12 +1565,14 @@ def notify_desktop(title: str, message: str) -> None:
 
     GAMMA installs/updates can run for a long time - if the user alt-tabs
     away, this is the only way they find out it's done without coming
-    back to check. Uses notify-send (present on virtually every Linux
-    desktop via libnotify) rather than a persistent QSystemTrayIcon, so
-    nothing new appears in the tray. Silently does nothing if it isn't
-    available - a missing notification must never affect the operation
-    that just completed.
+    back to check. Uses Qt's native tray notifications on Windows and
+    notify-send on Linux. Delivery follows the desktop notification settings.
     """
+    if os.name == "nt":
+        from ..notifications import notify
+
+        notify(title, message)
+        return
     exe = shutil.which("notify-send")
     if exe is None:
         return

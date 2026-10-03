@@ -300,6 +300,10 @@ def main(argv: list[str] | None = None) -> int:
     icon = project_root() / "cli" / "stalker-gamma.png"
     if icon.is_file():
         app.setWindowIcon(QIcon(str(icon)))
+    if os.name == "nt":
+        from .notifications import initialize_notifications
+
+        initialize_notifications(app)
     set_process_title()
     if os.name != "nt" and not in_game_mode():
         # Game Mode has no process monitor or app menu to show up in.
