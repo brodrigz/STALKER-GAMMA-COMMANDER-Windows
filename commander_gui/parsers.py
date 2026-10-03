@@ -10,6 +10,8 @@ on ANSI-stripped text.
 
 from __future__ import annotations
 
+import json
+import math
 import re
 from dataclasses import dataclass
 
@@ -47,10 +49,51 @@ class ProgressEvent:
     percent: float
     complete: int
     total: int
+    bytes_downloaded: int | None = None
+    total_bytes: int | None = None
+    bytes_per_second: float | None = None
+    structured: bool = False
+
+
+PROGRESS_PREFIX = "@commander-progress "
+_PROGRESS_OPERATIONS = {
+    "Download", "Extract", "Expand", "Check MD5", "Skipped", "Complete",
+    "Queued", "Resolving", "Retrying", "Resuming", "Verifying", "Downloaded", "Failed",
+}
+
+
+def _structured_progress(line: str) -> ProgressEvent | None:
+    try:
+        data = json.loads(line[len(PROGRESS_PREFIX):])
+        if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != 1:
+            return None
+        if not isinstance(data.get("name"), str) or not data["name"].strip():
+            return None
+        if not isinstance(data.get("operation"), str) or data["operation"] not in _PROGRESS_OPERATIONS:
+            return None
+        for key in ("complete", "total", "bytesDownloaded", "totalBytes"):
+            value = data.get(key)
+            if value is None and key in ("bytesDownloaded", "totalBytes"):
+                continue
+            if type(value) is not int or value < 0:
+                return None
+        for key in ("percent", "bytesPerSecond"):
+            value = data.get(key)
+            if value is None and key == "bytesPerSecond":
+                continue
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                return None
+        return ProgressEvent(data["name"], data["operation"], min(1.0, data["percent"]),
+                             data["complete"], data["total"], data.get("bytesDownloaded"),
+                             data.get("totalBytes"), data.get("bytesPerSecond"), True)
+    except (ValueError, TypeError, OverflowError):
+        return None
 
 
 def parse_progress_line(line: str) -> ProgressEvent | None:
     """Parse a single progress line; returns None if the line isn't progress."""
+    if line.startswith(PROGRESS_PREFIX):
+        return _structured_progress(line)
     match = INFORMATIONAL_PROGRESS_RE.match(line) or VERBOSE_PROGRESS_RE.match(line)
     if not match:
         return None

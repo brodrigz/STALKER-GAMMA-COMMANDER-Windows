@@ -1192,31 +1192,16 @@ class RegressionTests(unittest.TestCase):
         )
         self.assertEqual(area.bar.value(), 100)
 
-    def test_gamma_progress_table_hides_row_stuck_on_a_stale_line(self):
-        """Regression test for the reported frozen-addon-row bug.
-
-        An archive whose own last progress line never cleanly reached a
-        terminal state (e.g. a "Check MD5" pass that doesn't show 100%)
-        must still get hidden/force-completed once the CLI's own counter
-        proves nothing but the heavy repos remain unfinished - instead of
-        staying stuck showing that stale operation/percent forever.
-        """
+    def test_gamma_progress_table_does_not_guess_completion_from_counter(self):
         from commander_gui.ui.common import ProgressArea
 
         area = ProgressArea(show_table=True)
-        # 3 heavy repos + 2 ordinary archives = 5 total.
         area.on_line("[00:00:01] Mod A | Skipped | 100% | [1/5]")
-        mod_a_row = area.table._rows["Mod A"]
-        self.assertTrue(area.table.isRowHidden(mod_a_row))
-
-        # Mod X's own last-ever line is a non-terminal "Check MD5 47%" -
-        # but the CLI's own counter already says 2 of 5 items are done
-        # (Mod A and, implicitly, Mod X itself) - only the 3 heavy repos
-        # remain, so Mod X's stale row must be force-completed and hidden.
+        self.assertTrue(area.table.isRowHidden(area.table._rows["Mod A"]))
         area.on_line("[00:00:02] Mod X | Check MD5 | 47% | [2/5]")
-        mod_x_row = area.table._rows["Mod X"]
-        self.assertTrue(area.table.isRowHidden(mod_x_row))
-        self.assertEqual(area.table.item(mod_x_row, 1).text(), "Complete")
+        row = area.table._rows["Mod X"]
+        self.assertFalse(area.table.isRowHidden(row))
+        self.assertEqual(area.table.item(row, 1).text(), "Checking archive")
 
     def test_gamma_progress_table_skipped_is_terminal_regardless_of_percent(
         self,
@@ -1335,55 +1320,25 @@ class RegressionTests(unittest.TestCase):
                 page._on_full_finished(0, "Install complete!")
             mock_notify.assert_called_once()
 
-    def test_gamma_progress_table_evicts_stale_rows_mid_install_by_concurrency(
-        self,
-    ):
-        """Regression test for the reported frozen-Percent bug, mid-install.
-
-        finish_all_except() only ever fires once the CLI's own
-        [complete/total] counter proves nothing but the heavy repos remain
-        - i.e. only at the very end of a run. A row whose own last line
-        never cleanly hit 100%/Skipped much earlier (with hundreds of
-        items still genuinely left) had no way to recover before. With
-        only a handful of download threads, at most roughly that many
-        mods can genuinely be in flight at once - so once more rows than
-        that are simultaneously non-terminal, the oldest ones must
-        actually be done already.
-        """
+    def test_gamma_progress_table_retains_slow_downloads_mid_install(self):
         from commander_gui.ui.common import ProgressArea
 
         area = ProgressArea(show_table=True)
-        # Default concurrency cap (no set_concurrency() call) is 10. Feed
-        # 12 distinct mods, none ever reaching a clean terminal line, with
-        # `total` large so the end-of-install condition never triggers.
         for i in range(12):
-            area.on_line(f"[00:00:{i:02d}] Mod {i} | Check MD5 | 47% | [{i}/1000]")
+            area.on_line(f"[00:00:{i:02d}] Mod {i} | Download | 47% | [{i}/1000]")
+        for row in area.table._rows.values():
+            self.assertFalse(area.table.isRowHidden(row))
+            self.assertEqual(area.table.item(row, 1).text(), "Downloading")
 
-        rows = {i: area.table._rows[f"Mod {i}"] for i in range(12)}
-        # The 2 oldest (least-recently-touched) rows must be evicted...
-        self.assertTrue(area.table.isRowHidden(rows[0]))
-        self.assertTrue(area.table.isRowHidden(rows[1]))
-        self.assertEqual(area.table.item(rows[0], 1).text(), "Complete")
-        # ...while the 10 most recent stay visible, still showing their
-        # real (stale-for-now, but not yet evicted) state.
-        for i in range(2, 12):
-            self.assertFalse(area.table.isRowHidden(rows[i]))
-
-    def test_gamma_progress_table_concurrency_cap_follows_configured_threads(
-        self,
-    ):
-        """set_concurrency() must actually change the eviction threshold."""
+    def test_gamma_progress_table_concurrency_does_not_fabricate_completion(self):
         from commander_gui.ui.common import ProgressArea
 
         area = ProgressArea(show_table=True)
-        area.set_concurrency(2)  # cap becomes 2 + 4 = 6
+        area.set_concurrency(2)
         for i in range(8):
             area.on_line(f"[00:00:{i:02d}] Mod {i} | Check MD5 | 47% | [{i}/1000]")
-        rows = {i: area.table._rows[f"Mod {i}"] for i in range(8)}
-        for i in range(2):
-            self.assertTrue(area.table.isRowHidden(rows[i]))
-        for i in range(2, 8):
-            self.assertFalse(area.table.isRowHidden(rows[i]))
+        for row in area.table._rows.values():
+            self.assertFalse(area.table.isRowHidden(row))
 
     def test_start_full_install_configures_the_progress_table_concurrency(self):
         """The per-addon table's staleness cap must track the profile's
@@ -1428,7 +1383,7 @@ class RegressionTests(unittest.TestCase):
                 patch.object(page, "_build_full_command", return_value=["true"]),
             ):
                 page._start_full_install(skip_confirm=True)
-            self.assertEqual(page.full_progress.table._concurrency_cap, 15 + 4)
+            self.assertEqual(page.full_progress.table._concurrency, 15)
             if page._runner is not None:
                 page._runner.shutdown()
 

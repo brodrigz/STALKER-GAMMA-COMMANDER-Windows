@@ -55,6 +55,7 @@ from .common import (
     BackgroundTask,
     CommandRunner,
     ProgressArea,
+    VerticalResizeHandle,
     clear_layout,
     free_space_bytes,
     human_size,
@@ -177,79 +178,30 @@ class UpdatePage(QWidget):
         self._last_checked_at: datetime | None = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(24, 24, 24, 24)
         scroll = QScrollArea()
+        self.scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        outer.addWidget(scroll)
+        scroll.setMinimumHeight(160)
         content = QWidget()
         content.setObjectName("pageContent")
         root = QVBoxLayout(content)
-        root.setContentsMargins(24, 24, 24, 24)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(16)
         scroll.setWidget(content)
+        outer.addWidget(scroll)
 
-        # ---------- available addon changes card (top) ----------
+        # ---------- update status, check and available addon changes ----------
         updates_card, updates_layout = make_card()
         root.addWidget(updates_card)
-
-        # Title centered on its own row, rather than pinned to the left
-        # edge - the count/filter controls (only shown once there are
-        # actual diffs) get their own row below instead of crowding it.
-        updates_header = QHBoxLayout()
-        updates_header.addStretch(1)
-        updates_header.addWidget(section_label(tr("Available addon changes"), level=2))
-        updates_header.addStretch(1)
-        updates_layout.addLayout(updates_header)
-
-        controls_row = QHBoxLayout()
-        controls_row.addStretch(1)
-        self.count_summary = QLabel("")
-        self.count_summary.setTextFormat(Qt.TextFormat.RichText)
-        controls_row.addWidget(self.count_summary)
-        self.filter_combo = QComboBox()
-        self.filter_combo.addItems(["All", "Added", "Modified", "Removed"])
-        self.filter_combo.setMinimumWidth(110)
-        self.filter_combo.currentTextChanged.connect(self._apply_filter)
-        self.filter_combo.setVisible(False)
-        controls_row.addWidget(self.filter_combo)
-        updates_layout.addLayout(controls_row)
-
-        self.no_updates_label = info_label(tr("No addon changes. GAMMA is up to date."))
-        self.no_updates_label.setObjectName("accent")
-        self.no_updates_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        updates_layout.addWidget(self.no_updates_label)
-
-        self.table = QTableWidget(0, 3, self)
-        self.table.setHorizontalHeaderLabels(["", "Addon", "Archive change"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setShowGrid(False)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.horizontalHeader().setSectionResizeMode(
-            0, self.table.horizontalHeader().ResizeMode.ResizeToContents
-        )
-        self.table.horizontalHeader().setSectionResizeMode(
-            1, self.table.horizontalHeader().ResizeMode.Stretch
-        )
-        updates_layout.addWidget(self.table)
-
-        # ---------- version card: Installed | Latest Available ----------
-        # Installed hugs the card's left edge, Latest Available hugs its
-        # right edge - no vertical divider between them (removed: with
-        # the columns this far apart it read as a stray, misaligned mark
-        # rather than a meaningful separator).
-        version_card, version_layout = make_card()
-        root.addWidget(version_card)
 
         version_grid = QGridLayout()
         version_grid.setHorizontalSpacing(32)
         version_grid.setVerticalSpacing(6)
         version_grid.setColumnStretch(0, 1)
         version_grid.setColumnStretch(1, 1)
-        version_layout.addLayout(version_grid)
+        updates_layout.addLayout(version_grid)
 
         version_grid.addLayout(make_header_row("Installed"), 0, 0)
         # Right-aligned mirror of make_header_row(): title flush with the
@@ -279,14 +231,9 @@ class UpdatePage(QWidget):
         self.check_button = QPushButton(tr("Check for updates"))
         self.check_button.setObjectName("hero")
         self.check_button.clicked.connect(self._check)
-        version_layout.addWidget(self.check_button)
+        updates_layout.addWidget(self.check_button)
 
         # Status + "Last checked" centered on one line under the button.
-        # The separator reuses the exact same #installDivider QFrame as
-        # the Installed/Latest column divider above (not a "|" text
-        # glyph) so both are the identical color and both sit vertically
-        # centered on their own row, instead of a text pipe's off-center,
-        # differently-shaded look next to the divider bar.
         status_row = QHBoxLayout()
         status_row.addStretch(1)
         # wrap=False on both labels: word-wrap made either one grow to 2
@@ -313,12 +260,50 @@ class UpdatePage(QWidget):
         self.last_checked_label.setObjectName("dim")
         status_row.addWidget(self.last_checked_label, 0, Qt.AlignmentFlag.AlignVCenter)
         status_row.addStretch(1)
-        version_layout.addLayout(status_row)
+        updates_layout.addLayout(status_row)
+
+        # The change list is the result of the version check above.
+        updates_layout.addSpacing(12)
+        controls_row = QHBoxLayout()
+        controls_row.addWidget(section_label(tr("Available addon changes"), level=2))
+        controls_row.addStretch(1)
+        self.count_summary = QLabel("")
+        self.count_summary.setTextFormat(Qt.TextFormat.RichText)
+        controls_row.addWidget(self.count_summary)
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(["All", "Added", "Modified", "Removed"])
+        self.filter_combo.setMinimumWidth(110)
+        self.filter_combo.currentTextChanged.connect(self._apply_filter)
+        self.filter_combo.setVisible(False)
+        controls_row.addWidget(self.filter_combo)
+        updates_layout.addLayout(controls_row)
+
+        self.no_updates_label = info_label(tr("No addon changes. GAMMA is up to date."))
+        self.no_updates_label.setObjectName("accent")
+        self.no_updates_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        updates_layout.addWidget(self.no_updates_label)
+
+        self.table = QTableWidget(0, 3, self)
+        self.table.setMinimumHeight(200)
+        self.table.setHorizontalHeaderLabels(["", "Addon", "Archive change"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(
+            0, self.table.horizontalHeader().ResizeMode.ResizeToContents
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            1, self.table.horizontalHeader().ResizeMode.Stretch
+        )
+        updates_layout.addWidget(self.table)
+        self.changes_resize_handle = VerticalResizeHandle(self.table, minimum=200, initial=360)
+        updates_layout.addWidget(self.changes_resize_handle)
 
         # ---------- apply card ----------
-        # Between "Installed" and "What's New" - the options/actions for
-        # the version comparison right above, read before the (often
-        # long) release notes below.
+        # Actions follow the available changes, before the release notes.
         apply_card, apply_layout = make_card()
         root.addWidget(apply_card)
         apply_layout.setSpacing(8)
@@ -365,26 +350,13 @@ class UpdatePage(QWidget):
         self.undo_button.clicked.connect(self._undo_last_update)
         self.undo_button.setEnabled(False)
 
-        # show_table=False: the per-addon progress table makes sense for
-        # a full GAMMA install (hundreds of mods downloading in
-        # parallel), not a handful of addon updates - it otherwise sat
-        # permanently visible above the actual (collapsible) console,
-        # reading as a second, un-closeable "console" box.
-        # auto_expand_log=False: stays collapsed by default, even once
-        # an update starts - a plain install-page precedent none of this
-        # page's users need open by default the way a full install's
-        # live per-addon log does.
-        # bar_follows_log=True: the bar (and idle status line) stay
-        # hidden until "Show Console" is clicked too, right under this
-        # button - an update here is a handful of small downloads, not
-        # something that needs an always-visible progress bar the way a
-        # full install does.
+        # Download progress stays visible; detailed output is optional.
         self.apply_progress = ProgressArea(
-            show_table=False,
+            show_table=True,
             show_log=True,
-            log_max_height=180,
+            resizable_log=True,
             auto_expand_log=False,
-            bar_follows_log=True,
+            bar_follows_log=False,
             toggle_row_extra=self.undo_button,
         )
         self.apply_progress.cancel_button.clicked.connect(self._cancel_apply)
@@ -584,6 +556,7 @@ class UpdatePage(QWidget):
         has_diffs = bool(self._diffs)
         self.no_updates_label.setVisible(not has_diffs)
         self.table.setVisible(has_diffs)
+        self.changes_resize_handle.setVisible(has_diffs)
         self.filter_combo.setVisible(has_diffs)
 
         # Plain text change-count summary, colored per kind (no badge chrome).
@@ -799,6 +772,7 @@ class UpdatePage(QWidget):
         self._apply_runner = CommandRunner(
             cli_command(args, progress_interval_ms=200), parent=self
         )
+        self.apply_progress.set_runner(self._apply_runner)
         self._apply_runner.line.connect(self.apply_progress.on_line)
         self._apply_runner.finished.connect(self._on_apply_finished)
         self._apply_runner.cancelled.connect(
@@ -809,6 +783,7 @@ class UpdatePage(QWidget):
 
     def _on_apply_finished(self, rc: int, output: str) -> None:
         self._applying = False
+        self.apply_progress.set_runner(None)
         cancelled = self._apply_runner is not None and self._apply_runner.was_cancelled
         if cancelled:
             # on_finished() would otherwise leave the bar showing "Failed"
@@ -829,6 +804,7 @@ class UpdatePage(QWidget):
             self.table.setRowCount(0)
             self.no_updates_label.setVisible(True)
             self.table.setVisible(False)
+            self.changes_resize_handle.setVisible(False)
             # _render() keeps these four widgets consistent; hiding only the
             # table here left the filter box and the pre-update change counts
             # ("12 modified") on screen next to "No addon changes."

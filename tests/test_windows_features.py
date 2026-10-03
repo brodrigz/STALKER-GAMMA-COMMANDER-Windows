@@ -138,12 +138,87 @@ def test_windows_notification_delivery_uses_qt_queue(app, monkeypatch):
     service.deleteLater()
 
 
+def test_pause_resume_real_owned_process_and_child(tmp_path):
+    # Only harmless test processes are suspended, never the user's running CLI.
+    child_code = "import time; time.sleep(60)"
+    code = "import subprocess,sys,time; from pathlib import Path; p=subprocess.Popen([sys.executable,'-c',sys.argv[2]]); Path(sys.argv[1]).write_text(str(p.pid)); time.sleep(60)"
+    child_pid_path = tmp_path / "child.txt"
+    worker = subprocess.Popen([sys.executable, "-c", code, str(child_pid_path), child_code], creationflags=subprocess.CREATE_NO_WINDOW)
+    paused = PausedProcessTree()
+    child = None
+    try:
+        for _ in range(100):
+            if child_pid_path.exists() and child_pid_path.read_text():
+                break
+            time.sleep(0.02)
+        child = psutil.Process(int(child_pid_path.read_text()))
+        assert paused.suspend(worker)
+        assert psutil.Process(worker.pid).status() == psutil.STATUS_STOPPED
+        assert child.status() == psutil.STATUS_STOPPED
+        assert paused.resume()
+        assert psutil.Process(worker.pid).status() != psutil.STATUS_STOPPED
+        assert child.status() != psutil.STATUS_STOPPED
+        assert paused.suspend(worker)
+        terminate_process_tree(worker.pid, worker)
+        assert worker.poll() is not None
+        assert not child.is_running()
+    finally:
+        paused.resume()
+        if worker.poll() is None:
+            terminate_process_tree(worker.pid, worker)
+        if child is not None and child.is_running():
+            child.kill()
 
 
+def test_partial_pause_failure_rolls_back(monkeypatch):
+    root = Mock()
+    root.pid = 1
+    child = Mock()
+    child.pid = 2
+    root.children.return_value = [child]
+    child.suspend.side_effect = psutil.AccessDenied(2)
+    monkeypatch.setattr(psutil, "Process", lambda pid: root)
+    worker = SimpleNamespace(pid=1, poll=lambda: None)
+    with pytest.raises(OSError):
+        PausedProcessTree().suspend(worker)
+    root.resume.assert_called_once()
 
 
+def test_download_pause_ui_keeps_bytes_and_clears_speed(app):
+    from commander_gui.parsers import ProgressEvent
+    from commander_gui.ui.common import ProgressArea
+
+    area = ProgressArea()
+    runner = Mock()
+    runner.pause.return_value = True
+    runner.resume.return_value = True
+    area.set_runner(runner)
+    area.table.upsert(ProgressEvent(name="Addon", operation="Download", percent=0.4, complete=0, total=1,
+                                    bytes_downloaded=40, total_bytes=100, bytes_per_second=10, structured=True))
+    area._toggle_pause()
+    assert area.is_paused
+    assert area.table.item(0, 1).text() == "Paused"
+    assert area.table.cellWidget(0, 2).value() == 400
+    assert area.table.item(0, 3).text() == "—"
+    area.table._expire_speed()
+    assert area.table.item(0, 1).text() == "Paused"
+    area._toggle_pause()
+    assert not area.is_paused
+    assert area.table.cellWidget(0, 2).value() == 400
+    area.table.reset()
+    area.deleteLater()
 
 
+def test_failed_pause_does_not_lie_in_ui(app):
+    from commander_gui.ui.common import ProgressArea
+
+    area = ProgressArea()
+    runner = Mock()
+    runner.pause.return_value = False
+    area.set_runner(runner)
+    area._toggle_pause()
+    assert not area.is_paused
+    area.deleteLater()
 
 
 def test_runtime_recheck_button_and_failed_setup_release_busy(app, monkeypatch):

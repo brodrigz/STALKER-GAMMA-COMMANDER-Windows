@@ -9,7 +9,6 @@ import subprocess
 import sys
 import threading
 import time
-from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
@@ -24,7 +23,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -32,8 +31,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -42,8 +39,9 @@ from ..config import child_environment, is_secondary_instance
 from ..i18n import tr
 from ..integrity import format_size
 from ..modlist import count_mods, read_lines
-from ..parsers import ProgressEvent, parse_progress_line, strip_ansi
+from ..parsers import PROGRESS_PREFIX, parse_progress_line, strip_ansi
 from ..winetricks import WINETRICKS_VERBS
+from .download_activity import ProgressTable
 
 ACCENT = QColor("#8fe45c")
 WARN = QColor("#d9a04c")
@@ -793,15 +791,13 @@ class CommandRunner(QObject):
             if running and not _SHUTTING_DOWN:
                 self.cancelled.emit()
 
-    def pause(self) -> None:
-        """SIGSTOP the child process to freeze it in place."""
-        if self._worker is not None:
-            self._worker.pause()
+    def pause(self) -> bool:
+        """Pause the worker and its owned helpers."""
+        return self._worker.pause() if self._worker is not None else False
 
-    def resume(self) -> None:
-        """SIGCONT the child process to resume from where it was stopped."""
-        if self._worker is not None:
-            self._worker.resume()
+    def resume(self) -> bool:
+        """Resume a paused worker."""
+        return self._worker.resume() if self._worker is not None else False
 
     def shutdown(self, timeout_ms: int = 5000) -> None:
         """Cancel a running command and wait for its thread to finish."""
@@ -1124,10 +1120,64 @@ class StreamTask(QObject):
         _detach_unfinished_task(self)
 
 
+class VerticalResizeHandle(QFrame):
+    """Resize a widget's height without pinning it outside the page scroll area."""
+
+    def __init__(self, target: QWidget, *, minimum: int, initial: int, parent=None) -> None:
+        super().__init__(parent)
+        self._target = target
+        self._minimum = minimum
+        self._initial = initial
+        self._drag_origin: tuple[float, int] | None = None
+        target.setFixedHeight(initial)
+        self.setObjectName("verticalResizeHandle")
+        self.setFixedHeight(12)
+        self.setCursor(Qt.CursorShape.SizeVerCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(tr("Resize panel vertically"))
+        self.setToolTip(tr("Drag to resize vertically. Use Up/Down when focused; Home restores the default height."))
+
+    def _resize(self, height: int) -> None:
+        self._target.setFixedHeight(max(self._minimum, min(height, 16777215)))
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_origin = (event.globalPosition().y(), self._target.height())
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_origin is not None:
+            y, height = self._drag_origin
+            self._resize(height + round(event.globalPosition().y() - y))
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_origin is not None:
+            self.mouseMoveEvent(event)
+            self._drag_origin = None
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            self._resize(self._target.height() + (24 if event.key() == Qt.Key.Key_Down else -24))
+            event.accept()
+        elif event.key() == Qt.Key.Key_Home:
+            self._resize(self._initial)
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+
 class OutputPane(QFrame):
     """A read-only console-style log view."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, resizable: bool = False) -> None:
         super().__init__(parent)
         from PySide6.QtWidgets import QPlainTextEdit
 
@@ -1148,6 +1198,10 @@ class OutputPane(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.edit)
+        if resizable:
+            layout.setSpacing(0)
+            self.resize_handle = VerticalResizeHandle(self, minimum=140, initial=260, parent=self)
+            layout.addWidget(self.resize_handle)
 
     def append_line(self, text: str) -> None:
         self.edit.appendPlainText(strip_ansi(text))
@@ -1586,152 +1640,6 @@ def notify_desktop(title: str, message: str) -> None:
         pass
 
 
-class ProgressTable(QTableWidget):
-    """Live table of per-addon install progress."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(0, 3, parent)
-        self.setHorizontalHeaderLabels(["Addon", "Operation", "Percent"])
-        self.verticalHeader().setVisible(False)
-        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.horizontalHeader().setStretchLastSection(False)
-        self.horizontalHeader().setSectionResizeMode(
-            0, self.horizontalHeader().ResizeMode.Stretch
-        )
-        self.horizontalHeader().setSectionResizeMode(
-            1, self.horizontalHeader().ResizeMode.ResizeToContents
-        )
-        self.horizontalHeader().setSectionResizeMode(
-            2, self.horizontalHeader().ResizeMode.ResizeToContents
-        )
-        self.setSortingEnabled(False)
-        # OrderedDict, not dict: move_to_end() on every touch in upsert()
-        # turns iteration order into least-recently-touched-first, which
-        # finish_stale_by_concurrency() relies on to evict the *oldest*
-        # still-open rows first.
-        self._rows: OrderedDict[str, int] = OrderedDict()
-        # Matches the profile default of 6 download threads (see
-        # set_concurrency()) until a real install configures the actual
-        # value.
-        self._concurrency_cap = 10
-
-    def reset(self) -> None:
-        self.setRowCount(0)
-        self._rows.clear()
-
-    def set_concurrency(self, threads: int) -> None:
-        """Set how many rows can plausibly be in flight at once.
-
-        With only N download threads, at most roughly N mods can
-        genuinely be downloading/extracting concurrently - the +4 buffer
-        allows for normal overlap between pipeline stages (e.g. one item
-        finishing Download while another starts Extract). Anything beyond
-        this count showing as non-terminal must be stale, not still
-        running - see finish_stale_by_concurrency().
-        """
-        self._concurrency_cap = max(1, threads) + 4
-
-    def upsert(self, event: ProgressEvent) -> None:
-        row = self._rows.get(event.name)
-        if row is None:
-            row = self.rowCount()
-            self.insertRow(row)
-            self._rows[event.name] = row
-            self.setItem(row, 0, QTableWidgetItem(event.name))
-            self.setItem(row, 1, QTableWidgetItem(event.operation))
-            self.setItem(row, 2, QTableWidgetItem(f"{event.percent:.1%}"))
-        else:
-            op = self.item(row, 1)
-            pct = self.item(row, 2)
-            if op is None or pct is None:
-                return
-            op.setText(event.operation)
-            pct.setText(f"{event.percent:.1%}")
-            self._rows.move_to_end(event.name)
-
-        if event.operation == "Skipped" or event.percent >= 1.0:
-            self.item(row, 1).setForeground(QColor(OK_GREEN.name()))
-            self.item(row, 2).setForeground(QColor(OK_GREEN.name()))
-            # Done - hide instead of leaving a finished archive's row (and,
-            # for anything whose very last line never cleanly hit 100%, its
-            # stale operation/percent) cluttering the list indefinitely.
-            self.setRowHidden(row, True)
-        elif event.operation == "Check MD5":
-            self.item(row, 1).setForeground(QColor(TEAL.name()))
-        else:
-            self.item(row, 1).setForeground(QColor(LIGHT_GREY.name()))
-            self.item(row, 2).setForeground(QColor(LIGHT_GREY.name()))
-
-    def _finish_rows(self, names) -> None:
-        """Shared "force to Complete/100%, green, hidden" body."""
-        for name in names:
-            row = self._rows.get(name)
-            if row is None or self.isRowHidden(row):
-                continue
-            op = self.item(row, 1)
-            pct = self.item(row, 2)
-            if op is None or pct is None:
-                continue
-            op.setText(tr("Complete"))
-            pct.setText(tr("100.0%"))
-            op.setForeground(QColor(OK_GREEN.name()))
-            pct.setForeground(QColor(OK_GREEN.name()))
-            self.setRowHidden(row, True)
-
-    def finish_all(self) -> None:
-        """Mark every remaining row as 100% complete (used when a run ends)."""
-        self._finish_rows(list(self._rows.keys()))
-
-    def finish_all_except(self, keep_names: frozenset[str]) -> None:
-        """Force-complete and hide every row not in ``keep_names``.
-
-        Used once the CLI's own [complete/total] counter proves every item
-        still not finished must be one of the still-pending heavy repos in
-        ``keep_names`` - so any other row still lingering as non-terminal
-        (its own last line never cleanly signalled completion) is safe to
-        force-finish and hide instead of leaving it stuck.
-        """
-        self._finish_rows(
-            name for name in self._rows if name.strip().lower() not in keep_names
-        )
-
-    def finish_stale_by_concurrency(self, keep_names: frozenset[str]) -> None:
-        """Force-complete the oldest visible rows beyond the concurrency cap.
-
-        With only a handful of download threads, at most roughly that many
-        ordinary rows can genuinely be in flight at once - covers the
-        mid-install case finish_all_except() cannot: a row whose own last
-        line never cleanly reached 100%/Skipped, well before the CLI's
-        [complete/total] counter is anywhere near the end of the run.
-        """
-        visible = [
-            name
-            for name in self._rows
-            if name.strip().lower() not in keep_names
-            and not self.isRowHidden(self._rows[name])
-        ]
-        excess = len(visible) - self._concurrency_cap
-        if excess > 0:
-            self._finish_rows(visible[:excess])
-
-    def mark_interrupted(self) -> None:
-        """Relabel any row still non-terminal when a run ends without success.
-
-        The row stays visible (it did not actually finish - hiding it
-        would be dishonest), but its stale operation/percent no longer
-        looks like it is silently still running once the whole process
-        has actually stopped or been cancelled.
-        """
-        for row in set(self._rows.values()):
-            if self.isRowHidden(row):
-                continue
-            op = self.item(row, 1)
-            if op is None or op.text() == tr("Complete"):
-                continue
-            op.setText(tr("Interrupted"))
-            op.setForeground(QColor(WARN.name()))
-
 
 def progress_value(complete: int, total: int) -> int:
     """Convert aggregate completed/total mod counts to a bounded percentage."""
@@ -1850,6 +1758,7 @@ class ProgressArea(QWidget):
         show_log: bool = True,
         stage_progress: bool = False,
         log_max_height: int | None = None,
+        resizable_log: bool = False,
         auto_expand_log: bool = True,
         bar_follows_log: bool = False,
         toggle_row_extra: QWidget | None = None,
@@ -1880,6 +1789,7 @@ class ProgressArea(QWidget):
         self._status_idle = ""
         self._max_bar_value: int = 0
         self._heavy_progress: dict[str, float] = {}
+        self._structured_names: set[str] = set()
         self._last_status_update: float = 0.0
         self._runner: CommandRunner | None = None
         self._paused = False
@@ -1888,9 +1798,33 @@ class ProgressArea(QWidget):
         self.bar.setFormat(self._bar_idle_format)
 
         self.table = ProgressTable(self) if show_table else None
+        self.table_panel = QWidget(self) if show_table else None
+        self.table_resize_handle = None
+        if self.table is not None:
+            table_layout = QVBoxLayout(self.table_panel)
+            table_layout.setContentsMargins(0, 0, 0, 0)
+            table_layout.setSpacing(4)
+            heading = QHBoxLayout()
+            self.table_summary = QLabel(self.table.summary)
+            self.table_summary.setObjectName("info")
+            heading.addWidget(self.table_summary)
+            heading.addStretch(1)
+            self.completed_toggle = QCheckBox(tr("Show completed"))
+            self.completed_toggle.toggled.connect(self.table.set_show_completed)
+            heading.addWidget(self.completed_toggle)
+            table_layout.addLayout(heading)
+            table_layout.addWidget(self.table)
+            self.table_resize_handle = VerticalResizeHandle(self.table, minimum=160, initial=280)
+            table_layout.addWidget(self.table_resize_handle)
+            self.table.changed.connect(lambda: self.table_summary.setText(self.table.summary))
 
         self.status_label = QLabel(self._status_idle)
         self.status_label.setObjectName("info")
+
+        self.connection_notice = QLabel()
+        self.connection_notice.setObjectName("info")
+        self.connection_notice.setWordWrap(True)
+        self.connection_notice.hide()
 
         self.heavy_notice_label: QLabel | None = None
         if show_table:
@@ -1900,7 +1834,7 @@ class ProgressArea(QWidget):
             self.heavy_notice_label.setWordWrap(True)
             self.heavy_notice_label.hide()
 
-        self.log = OutputPane(self) if show_log else None
+        self.log = OutputPane(self, resizable=resizable_log) if show_log else None
         self.log_toggle: QPushButton | None = None
         if self.log is not None:
             if log_max_height is not None:
@@ -1919,8 +1853,8 @@ class ProgressArea(QWidget):
         # permanently visible like every other progress box's console.
         self.table_toggle: QPushButton | None = None
         if self.table is not None and self.log is None:
-            self.table.hide()
-            self.table_toggle = QPushButton(tr("Show Console"), self)
+            self.table_panel.hide()
+            self.table_toggle = QPushButton(tr("Show downloads"), self)
             self.table_toggle.setObjectName("consoleToggle")
             self.table_toggle.setFixedSize(110, 26)
             self.table_toggle.clicked.connect(self._toggle_table)
@@ -1953,6 +1887,7 @@ class ProgressArea(QWidget):
         layout.addLayout(status_row)
         layout.addSpacing(2)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.connection_notice)
         if show_table:
             # Tight, matching the log-toggle gap below - pulls the addon
             # table (Addon/Operation/Percent) up right under the bar and
@@ -1962,7 +1897,7 @@ class ProgressArea(QWidget):
             layout.addSpacing(2)
             layout.addWidget(self.heavy_notice_label)
             layout.addSpacing(2)
-            layout.addWidget(self.table, 3)
+            layout.addWidget(self.table_panel, 3)
             if self.log is not None:
                 # Tighter than the other gaps - pulls the Show Console
                 # toggle up right under the table/status text instead of
@@ -2016,12 +1951,12 @@ class ProgressArea(QWidget):
     def _toggle_table(self) -> None:
         if self.table is None or self.table_toggle is None:
             return
-        if self.table.isVisible():
-            self.table.hide()
-            self.table_toggle.setText(tr("Show Console"))
+        if not self.table_panel.isHidden():
+            self.table_panel.hide()
+            self.table_toggle.setText(tr("Show downloads"))
         else:
-            self.table.show()
-            self.table_toggle.setText(tr("Hide Console"))
+            self.table_panel.show()
+            self.table_toggle.setText(tr("Hide downloads"))
         if self._bar_follows_log:
             self.bar.setVisible(self.table.isVisible())
             self.status_label.setVisible(self.table.isVisible())
@@ -2038,21 +1973,23 @@ class ProgressArea(QWidget):
         if (
             self.table is not None
             and self.table_toggle is not None
-            and not self.table.isVisible()
+            and self.table_panel.isHidden()
         ):
-            self.table.show()
-            self.table_toggle.setText(tr("Hide Console"))
+            self.table_panel.show()
+            self.table_toggle.setText(tr("Hide downloads"))
         if self._bar_follows_log:
             self.bar.show()
             self.status_label.show()
 
     def reset(self) -> None:
+        self.connection_notice.hide()
         self.bar.setRange(0, 1)
         self.bar.setValue(0)
         self.bar.setFormat(self._bar_idle_format)
         self.bar.setStyleSheet("")
         self._max_bar_value = 0
         self._heavy_progress = {}
+        self._structured_names.clear()
         self._last_status_update = 0.0
         self._paused = False
         if self.table is not None:
@@ -2071,6 +2008,7 @@ class ProgressArea(QWidget):
         self._runner = runner
         self._paused = False
         self.pause_button.setText(tr("Pause"))
+        self.pause_button.setVisible(runner is not None)
 
     def set_concurrency(self, threads: int) -> None:
         """Forward the configured download-thread count to the addon table.
@@ -2088,23 +2026,38 @@ class ProgressArea(QWidget):
         if self._runner is None:
             return
         if self._paused:
-            self._runner.resume()
+            if not self._runner.resume():
+                return
             self._paused = False
             self.pause_button.setText(tr("Pause"))
             self.bar.setFormat(self._bar_percent_format)
             self.status_label.setText("")
         else:
-            self._runner.pause()
+            if not self._runner.pause():
+                return
             self._paused = True
             self.pause_button.setText(tr("Resume"))
             self.bar.setFormat("Paused")
+        if self.table is not None:
+            self.table.set_paused(self._paused)
 
     def on_line(self, line: str) -> None:
         clean = strip_ansi(line)
-        if self.log is not None:
+        if clean.startswith("@commander-status "):
+            message = clean.removeprefix("@commander-status ")
+            self.connection_notice.setText(message)
+            self.connection_notice.show()
+            if self.log is not None:
+                self.log.append_line(message)
+            return
+        if self.log is not None and not clean.startswith(PROGRESS_PREFIX):
             self.log.append_line(clean)
         event = parse_progress_line(clean)
         if event is not None:
+            if event.structured:
+                self._structured_names.add(event.name)
+            elif event.name in self._structured_names:
+                return
             self.bar.setStyleSheet("")
             if self.stage_progress:
                 if event.operation == "Download":
@@ -2157,7 +2110,7 @@ class ProgressArea(QWidget):
                 event.percent,
                 name=event.name,
                 heavy_progress=self._heavy_progress,
-                operation=event.operation,
+                operation="Download" if event.operation in {"Resuming", "Downloaded", "Verifying"} else event.operation,
             )
             self._max_bar_value = max(self._max_bar_value, value)
             if self.table is not None:
@@ -2168,38 +2121,21 @@ class ProgressArea(QWidget):
                 self.bar.setRange(0, 100)
                 self.bar.setValue(round(event.percent * 100))
                 self.bar.setFormat(self._bar_percent_format)
-            if self.table is not None:
-                heavy_not_done = sum(
-                    1
-                    for h in _HEAVY_ARCHIVE_NAMES
-                    if self._heavy_progress.get(h, 0.0) < 1.0
+            if self._paused:
+                self.bar.setFormat("Paused")
+            if self.heavy_notice_label is not None:
+                heavy_active = any(
+                    p < 1.0 for p in self._heavy_progress.values()
                 )
-                # The CLI's own counter can never say fewer items are
-                # unfinished than the heavy repos we know are still
-                # pending - equality means nothing else is left running,
-                # so any other row still lingering as non-terminal is safe
-                # to force-finish instead of staying stuck.
-                if event.total - event.complete == heavy_not_done:
-                    self.table.finish_all_except(_HEAVY_ARCHIVE_NAMES)
-                else:
-                    # Mid-install case the counter check above can't catch:
-                    # a row whose own last line never cleanly reached
-                    # 100%/Skipped, long before the run is anywhere near
-                    # its end.
-                    self.table.finish_stale_by_concurrency(_HEAVY_ARCHIVE_NAMES)
-                if self.heavy_notice_label is not None:
-                    heavy_active = any(
-                        p < 1.0 for p in self._heavy_progress.values()
-                    )
-                    if heavy_active:
-                        self.heavy_notice_label.setText(
-                            tr(
-                                "A large repository is downloading in the background - other addons may pause until it finishes. This can take a while."
-                            )
+                if heavy_active:
+                    self.heavy_notice_label.setText(
+                        tr(
+                            "A large repository is downloading in the background - other addons may pause until it finishes. This can take a while."
                         )
-                        self.heavy_notice_label.show()
-                    else:
-                        self.heavy_notice_label.hide()
+                    )
+                    self.heavy_notice_label.show()
+                else:
+                    self.heavy_notice_label.hide()
 
     def status_message(self, text: str) -> None:
         self.status_label.setText(text)
@@ -2208,7 +2144,7 @@ class ProgressArea(QWidget):
         self.cancel_button.show()
         self.cancel_button.setEnabled(True)
         self.cancel_button.setText(tr("Cancel"))
-        self.pause_button.show()
+        self.pause_button.setVisible(self._runner is not None)
         self.pause_button.setEnabled(True)
         self.pause_button.setText(tr("Pause"))
         self._paused = False
@@ -2220,6 +2156,7 @@ class ProgressArea(QWidget):
             self._show_log()
 
     def on_finished(self, rc: int, output: str) -> None:
+        self.connection_notice.hide()
         self.cancel_button.hide()
         self.pause_button.hide()
         self._paused = False
@@ -2247,6 +2184,7 @@ class ProgressArea(QWidget):
 
     def on_cancelled(self) -> None:
         """Reset the bar/buttons to an idle Cancelled state (keeps the log)."""
+        self.connection_notice.hide()
         self.cancel_button.hide()
         self.pause_button.hide()
         self._paused = False

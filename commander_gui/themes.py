@@ -133,6 +133,14 @@ QScrollArea {
     background: transparent;
     border: none;
 }
+QFrame#verticalResizeHandle {
+    background-color: $border_strong;
+    border-radius: 2px;
+    margin: 4px 40px;
+}
+QFrame#verticalResizeHandle:hover, QFrame#verticalResizeHandle:focus {
+    background-color: $accent;
+}
 QScrollArea > QWidget#qt_scrollarea_viewport,
 QWidget#pageContent {
     background: transparent;
@@ -621,6 +629,15 @@ QProgressBar::text {
     background: rgba(0, 0, 0, 0.55);
     padding: 1px 6px;
     border-radius: 3px;
+}
+QProgressBar#addonProgress {
+    margin: 7px 8px;
+    min-height: 20px;
+    max-height: 20px;
+    font-size: 11px;
+}
+QProgressBar#addonProgress[activityState="interrupted"]::chunk {
+    background: $warn;
 }
 QTableWidget, QListWidget {
     background-color: $input;

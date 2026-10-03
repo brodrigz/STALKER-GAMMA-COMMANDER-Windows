@@ -98,6 +98,8 @@ class CliWorker(QObject):
         self._cwd = ""
         self._env: dict[str, str] | None = None
         self._cancel_event = threading.Event()
+        self._pause_lock = threading.RLock()
+        self._paused_tree = None
 
     def setup(
         self, command: list[str], cwd: str = "", env: dict[str, str] | None = None
@@ -109,6 +111,18 @@ class CliWorker(QObject):
 
     @Slot()
     def run(self) -> None:
+        try:
+            self._run_command()
+        finally:
+            with self._pause_lock:
+                if self._paused_tree is not None:
+                    try:
+                        self._paused_tree.resume()
+                    except OSError as exc:
+                        self.line_ready.emit(f"Could not release paused helpers: {exc}")
+                    self._paused_tree = None
+
+    def _run_command(self) -> None:
         """Run the command, streaming stdout.
 
         Every failure path must still emit ``finished``: callers gate UI state
@@ -123,6 +137,8 @@ class CliWorker(QObject):
         env = child_environment()
         if self._env:
             env.update(self._env)
+        # Optional protocol understood by our fork; older binaries ignore it.
+        env["COMMANDER_PROGRESS_JSON"] = "1"
         collected: deque[str] = deque(maxlen=_MAX_OUTPUT_LINES)
         if not command:
             self.finished.emit(SPAWN_FAILED_RC, "No command specified")
@@ -230,25 +246,39 @@ class CliWorker(QObject):
             except OSError:
                 pass
 
-    def pause(self) -> None:
-        """SIGSTOP the child process group to freeze it in place."""
+    def pause(self) -> bool:
+        """Pause the owned CLI and helpers without discarding their state."""
         proc = self._process
-        if proc is None or proc.poll() is not None or os.name == "nt":
-            return
+        if proc is None or proc.poll() is not None or self._cancel_event.is_set():
+            return False
         try:
-            os.killpg(proc.pid, signal.SIGSTOP)
-        except OSError:
-            pass
+            with self._pause_lock:
+                if os.name == "nt":
+                    from .windows import PausedProcessTree
 
-    def resume(self) -> None:
-        """SIGCONT the child process group to resume from where it was stopped."""
+                    if self._paused_tree is None:
+                        self._paused_tree = PausedProcessTree()
+                    return self._paused_tree.suspend(proc)
+                os.killpg(proc.pid, signal.SIGSTOP)
+                return True
+        except OSError as exc:
+            self.line_ready.emit(f"@commander-status Pause failed: {exc}")
+            return False
+
+    def resume(self) -> bool:
+        """Resume the same processes, including any suspended extractors."""
         proc = self._process
-        if proc is None or proc.poll() is not None or os.name == "nt":
-            return
+        if proc is None or proc.poll() is not None:
+            return False
         try:
-            os.killpg(proc.pid, signal.SIGCONT)
-        except OSError:
-            pass
+            with self._pause_lock:
+                if os.name == "nt":
+                    return self._paused_tree.resume() if self._paused_tree is not None else True
+                os.killpg(proc.pid, signal.SIGCONT)
+                return True
+        except OSError as exc:
+            self.line_ready.emit(f"@commander-status Resume failed: {exc}")
+            return False
 
     @Slot()
     def kill(self) -> None:
