@@ -859,6 +859,8 @@ class UtilitiesPage(QWidget):
             ),
         ]
         for title, description, slot in tools:
+            if os.name == "nt" and slot == self._repair_prefix:
+                continue
             rows.addWidget(self._tool_row(title, description, slot))
         layout.addLayout(rows)
         return card

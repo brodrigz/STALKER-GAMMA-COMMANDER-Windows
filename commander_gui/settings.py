@@ -8,6 +8,7 @@ safely share the same file.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -216,6 +217,7 @@ def run_config_command(args: list[str], timeout: int = 120) -> tuple[int, str, s
             errors="replace",
             timeout=timeout,
             check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
     except subprocess.TimeoutExpired:
         label = args[0] if args else "<no args>"
@@ -235,6 +237,9 @@ def cli_ok(
         "already exists",
         "exception",
         "unhandled",
+        "unrecognized option",
+        "unknown option",
+        "application terminated unexpectedly",
     ),
 ) -> bool:
     """Whether a CLI invocation succeeded.

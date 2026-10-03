@@ -169,6 +169,11 @@ def mo2_running(*, force: bool = False) -> bool:
     """
     global _MO2_RUNNING_CACHE, _MO2_RUNNING_RESULT
 
+    if os.name == "nt":
+        from ..windows import executable_pids
+
+        return bool(executable_pids("ModOrganizer.exe"))
+
     import time
 
     now = time.monotonic()
@@ -221,6 +226,11 @@ def game_running(*, force: bool = False) -> bool:
     """
     global _GAME_RUNNING_CACHE, _GAME_RUNNING_RESULT
 
+    if os.name == "nt":
+        from ..windows import game_running as windows_game_running
+
+        return windows_game_running()
+
     import time
 
     if mo2_running(force=force):
@@ -255,6 +265,10 @@ def steam_running() -> bool:
     to restart Steam to see a shortcut just added, not a guard that blocks
     the write.
     """
+    if os.name == "nt":
+        from ..windows import executable_pids
+
+        return bool(executable_pids("steam.exe"))
     exe = shutil.which("pgrep")
     if not exe:
         return False
@@ -280,6 +294,10 @@ def mo2_pids() -> set[int]:
     wrongly leaves the Play page's buttons disabled forever once the launch's
     own instance closes while a pre-existing one lingers.
     """
+    if os.name == "nt":
+        from ..windows import executable_pids
+
+        return executable_pids("ModOrganizer.exe")
     exe = shutil.which("pgrep")
     if not exe:
         return set()
@@ -318,6 +336,10 @@ def exe_pids(exe_name: str) -> set[int]:
     guaranteed to match how Wine reports the running process's own
     command line.
     """
+    if os.name == "nt":
+        from ..windows import executable_pids
+
+        return executable_pids(exe_name)
     exe = shutil.which("pgrep")
     if not exe:
         return set()
@@ -1484,6 +1506,11 @@ def open_in_file_manager(path: str | Path) -> bool:
     success without opening anything, so Dolphin is launched directly (with
     ``--new-window`` to avoid being absorbed into a running instance).
     """
+    if os.name == "nt":
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
     path = str(path)
     desktop = (os.environ.get("XDG_CURRENT_DESKTOP") or "").lower()
     command: list[str] | None = None

@@ -25,7 +25,9 @@ class GameBackupTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         root = Path(self._tmp.name)
         self.data = root / "data"
-        env = patch.dict(os.environ, {"XDG_DATA_HOME": str(self.data)})
+        env = patch.dict(os.environ, {
+            "XDG_DATA_HOME": str(self.data), "LOCALAPPDATA": str(self.data),
+        })
         env.start()
         self.addCleanup(env.stop)
         self.addCleanup(self._tmp.cleanup)

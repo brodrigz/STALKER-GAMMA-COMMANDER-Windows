@@ -140,7 +140,7 @@ class CliWorker(QObject):
                 errors="replace",
                 start_new_session=os.name != "nt",
                 creationflags=(
-                    subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+                    subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
                 ),
             )
         except (OSError, ValueError) as exc:
@@ -172,7 +172,7 @@ class CliWorker(QObject):
                     if os.name != "nt":
                         os.killpg(proc.pid, signal.SIGKILL)
                     else:
-                        proc.kill()
+                        _terminate_group(proc.pid, proc)
                 except OSError:
                     try:
                         proc.kill()
@@ -195,7 +195,9 @@ class CliWorker(QObject):
         pid = proc.pid
         try:
             if os.name == "nt":
-                proc.send_signal(_CANCEL_SIGNAL)
+                # A windowless GUI has no console to deliver CTRL_BREAK to.
+                # Stop the owned tree, including download/extraction helpers.
+                threading.Thread(target=_terminate_group, args=(pid, proc), daemon=True).start()
             else:
                 os.killpg(pid, _CANCEL_SIGNAL)
         except OSError:
@@ -221,7 +223,7 @@ class CliWorker(QObject):
             if os.name != "nt":
                 os.killpg(proc.pid, signal.SIGKILL)
             else:
-                proc.kill()
+                _terminate_group(proc.pid, proc)
         except OSError:
             try:
                 proc.kill()
@@ -256,7 +258,7 @@ class CliWorker(QObject):
                 if os.name != "nt":
                     os.killpg(proc.pid, signal.SIGKILL)
                 else:
-                    proc.kill()
+                    _terminate_group(proc.pid, proc)
             except OSError:
                 try:
                     proc.kill()
@@ -302,7 +304,7 @@ def run_sync(
             errors="replace",
             start_new_session=os.name != "nt",
             creationflags=(
-                subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+                subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             ),
         )
         stdout, stderr = proc.communicate(timeout=timeout)
@@ -333,6 +335,8 @@ def cli_command(
 ) -> list[str]:
     """Build the full command line for a CLI invocation."""
     cmd = [str(cli_binary_path()), *args]
-    if progress_interval_ms is not None:
+    # The pinned upstream Windows 1.35.0 CLI emits progress without this
+    # Commander-specific option; passing it causes command validation to fail.
+    if progress_interval_ms is not None and os.name != "nt":
         cmd += ["--progress-update-interval-ms", str(progress_interval_ms)]
     return cmd

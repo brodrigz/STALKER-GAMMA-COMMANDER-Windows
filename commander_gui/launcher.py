@@ -278,12 +278,9 @@ def _terminate_process_group(
     """Terminate a detached process group, falling back to its process."""
     try:
         if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+            from .windows import terminate_process_tree
+
+            terminate_process_tree(pid, process)
         else:
             os.killpg(pid, signal.SIGTERM)
     except OSError:
@@ -562,7 +559,7 @@ def build_runner_tool_command(
 
 def mo2_path_to_host(value: str) -> str:
     """Translate an MO2 ini path (``Z:/...``) to a host path."""
-    if value.startswith("Z:"):
+    if os.name != "nt" and value.startswith("Z:"):
         rest = value[2:].replace("\\", "/")
         if not rest.startswith("/"):
             rest = "/" + rest
@@ -995,10 +992,15 @@ def build_direct_command(
     if exe.arguments:
         # MO2 stores the argument string as the user typed it, so quoted
         # arguments containing spaces must survive splitting intact.
-        try:
-            args += shlex.split(exe.arguments)
-        except ValueError:
-            args += exe.arguments.split()
+        if os.name == "nt":
+            from .windows import split_arguments
+
+            args += split_arguments(exe.arguments)
+        else:
+            try:
+                args += shlex.split(exe.arguments)
+            except ValueError:
+                args += exe.arguments.split()
     return [*runner.wrapper, *args], dict(runner.env), cwd
 
 
@@ -1141,6 +1143,10 @@ def launch_detached(
     if not command:
         raise LaunchError("No command specified")
     full_env = runner_environment(env)
+    if os.name == "nt":
+        from .windows import external_environment
+
+        full_env = external_environment(full_env)
     stripped: list[str] = []
     for key in list(full_env):
         upper = key.upper()
@@ -1170,6 +1176,10 @@ def launch_detached(
                 )
                 stdout.flush()
         try:
+            if os.name == "nt":
+                from .windows import external_dll_directory
+
+                stack.enter_context(external_dll_directory())
             process = subprocess.Popen(
                 command,
                 cwd=cwd,

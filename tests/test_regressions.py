@@ -3808,7 +3808,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(kwargs["start_new_session"], os.name != "nt")
         self.assertEqual(
             kwargs["creationflags"],
-            subprocess.CREATE_NEW_PROCESS_GROUP
+            subprocess.CREATE_NO_WINDOW
             if os.name == "nt"
             else 0,
         )
@@ -3918,13 +3918,11 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(
             cli_command(["install", "--profile", "gamma"], progress_interval_ms=200),
             [
-                "/cli/stalker-gamma",
+                str(Path("/cli/stalker-gamma")),
                 "install",
                 "--profile",
                 "gamma",
-                "--progress-update-interval-ms",
-                "200",
-            ],
+            ] + (["--progress-update-interval-ms", "200"] if os.name != "nt" else []),
         )
 
     def test_build_command_constructs_runner_profile_and_target(self):
@@ -6980,7 +6978,12 @@ class UserModsTrackerTests(unittest.TestCase):
                     "commander_gui.ui.main_window.BackgroundTask"
                 ) as mock_task_cls:
                     window._check_commander_update_status()
-                mock_task_cls.assert_called_once()
+                if os.name == "nt":
+                    mock_task_cls.assert_not_called()
+                    self.assertEqual(window._update_status_button.text(), "Windows development build")
+                    self.assertFalse(window._update_status_button.isEnabled())
+                else:
+                    mock_task_cls.assert_called_once()
             finally:
                 window.close()
 

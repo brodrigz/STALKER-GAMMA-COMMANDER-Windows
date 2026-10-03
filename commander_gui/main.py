@@ -162,7 +162,7 @@ def _cli_binary_problem() -> tuple[str, str] | None:
         return (
             "CLI Not Found",
             (f"Could not locate the stalker-gamma CLI at:\n{binary}\n\n"
-            "Place the extracted CLI bundle under Project/cli/usr/bin/ "
+            "Run scripts/Setup-Windows.ps1 to install the pinned Windows backend, "
             "or set the STALKER_GAMMA_CLI environment variable."),
         )
     if not os.access(binary, os.X_OK):
@@ -290,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     global _INSTANCE_LOCK, _PREVIOUS_QT_HANDLER
     install_excepthook()
     argv = list(sys.argv if argv is None else argv)
-    deck = deck_requested(argv)
+    deck = deck_requested(argv) if os.name != "nt" else False
     _PREVIOUS_QT_HANDLER = qInstallMessageHandler(_quiet_qt_message_handler)
     app = QApplication(strip_deck_flag(argv))
     app.setApplicationName("STALKER COMMANDER")
@@ -301,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     if icon.is_file():
         app.setWindowIcon(QIcon(str(icon)))
     set_process_title()
-    if not in_game_mode():
+    if os.name != "nt" and not in_game_mode():
         # Game Mode has no process monitor or app menu to show up in.
         join_app_scope()
         ensure_menu_entry()
@@ -354,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
     # hardware if it is still unsettled. Nothing has been built yet, so a
     # "yes" just changes which window class gets constructed below - no
     # re-exec is involved on this path.
-    if not deck:
+    if not deck and os.name != "nt":
         deck = startup_wants_deck(
             _gui.get("deck_mode_preference", "ask"),
             on_deck=steam_deck_model() is not None,

@@ -40,6 +40,8 @@ def _private_data_home(tmp_path, monkeypatch):
     ``~/.local/share``: installs, updates and repairs now back up settings
     first, and many tests drive those flows against temporary installs."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
 
 
 def pytest_collection_modifyitems(items):

@@ -7,6 +7,7 @@ control. Themes and the UI scale apply live.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
@@ -120,12 +121,18 @@ class SettingsPage(QWidget):
         scroll.setWidget(content)
 
         root.addWidget(self._launch_card())
-        root.addWidget(self._launcher_card())
+        launcher_card = self._launcher_card()
+        root.addWidget(launcher_card)
+        launcher_card.setVisible(os.name != "nt")
         root.addWidget(self._appearance_card())
         root.addWidget(self._themes_card())
-        root.addWidget(self._discord_card())
+        discord_card = self._discord_card()
+        root.addWidget(discord_card)
+        discord_card.setVisible(os.name != "nt")
         root.addWidget(self._playtime_card())
-        root.addWidget(self._steam_card())
+        steam_card = self._steam_card()
+        root.addWidget(steam_card)
+        steam_card.setVisible(os.name != "nt")
         root.addWidget(self._diagnostics_card())
         root.addStretch(1)
 
@@ -161,6 +168,11 @@ class SettingsPage(QWidget):
         )
         self._autostart_check.toggled.connect(self._on_autostart_toggled)
         layout.addWidget(self._autostart_check)
+        if os.name == "nt":
+            self._autostart_check.setEnabled(False)
+            self._autostart_check.setToolTip("Windows autostart is not available yet.")
+            self._deck_mode_combo.setCurrentIndex(self._deck_mode_combo.findData("never"))
+            self._deck_mode_combo.setEnabled(False)
 
         self._welcome_check = QCheckBox(tr("Show the Welcome screen on startup"))
         self._welcome_check.setToolTip(
@@ -202,6 +214,11 @@ class SettingsPage(QWidget):
         return card
 
     def _render_build(self) -> None:
+        if os.name == "nt":
+            self._build_label.setText(f"{__version_label__} · Windows development")
+            self._switch_build_button.hide()
+            self._build_note.setText("Update this development build from the Windows fork repository.")
+            return
         unstable = is_unstable_version(__version__)
         kind = tr("Unstable") if unstable else tr("Stable")
         self._build_label.setText(f"{__version_label__}   ·   {kind}")

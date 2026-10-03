@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -61,7 +62,9 @@ def is_secondary_instance() -> bool:
 
 
 def project_root() -> Path:
-    """Return the project root (parent of the package directory)."""
+    """Return the source root or the frozen application's resource directory."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
     return Path(__file__).resolve().parent.parent
 
 
@@ -70,7 +73,7 @@ def cli_binary_path() -> Path:
 
     Resolution order:
       1. STALKER_GAMMA_CLI environment variable
-      2. bundled: <project>/cli/usr/bin/stalker-gamma
+      2. bundled: <resources>/cli/windows/stalker-gamma.exe on Windows
       3. system PATH
     """
     env = os.environ.get("STALKER_GAMMA_CLI")
@@ -78,7 +81,9 @@ def cli_binary_path() -> Path:
         return Path(env).expanduser()
 
     candidates = [
-        project_root() / "cli" / "usr" / "bin" / "stalker-gamma",
+        project_root() / "cli" / "windows" / "stalker-gamma.exe"
+        if os.name == "nt"
+        else project_root() / "cli" / "usr" / "bin" / "stalker-gamma",
     ]
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
@@ -95,6 +100,10 @@ def cli_binary_path() -> Path:
 
 def settings_dir() -> Path:
     """Directory where the CLI stores its settings (~/.config/stalker-gamma)."""
+    if os.name == "nt":
+        # Matches the CLI's .NET SpecialFolder.ApplicationData (Roaming).
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "stalker-gamma"
     base = os.environ.get("XDG_CONFIG_HOME")
     if not base:
         base = os.path.join(Path.home(), ".config")

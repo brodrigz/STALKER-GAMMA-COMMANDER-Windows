@@ -20,7 +20,7 @@ class ModInstallError(RuntimeError):
 
 def find_archiver() -> Path:
     """Locate the bundled 7zz helper, falling back to a system 7-Zip."""
-    bundled = cli_binary_path().parent / "resources" / "7zz"
+    bundled = cli_binary_path().parent / "resources" / ("7zz.exe" if os.name == "nt" else "7zz")
     if bundled.is_file() and os.access(bundled, os.X_OK):
         return bundled
     for name in ("7zz", "7z", "7za"):

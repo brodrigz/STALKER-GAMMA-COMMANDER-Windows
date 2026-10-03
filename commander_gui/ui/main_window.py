@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from typing import ClassVar
 
@@ -332,6 +333,9 @@ class MainWindow(QMainWindow):
         self._on_nav(self.tabs.currentIndex())
 
     def _maybe_show_welcome(self) -> None:
+        if os.name == "nt":
+            # The upstream welcome screen advertises Linux releases.
+            return
         from .welcome_overlay import maybe_show_welcome
 
         self._welcome = maybe_show_welcome(self)
@@ -767,6 +771,10 @@ class MainWindow(QMainWindow):
         updates..." → "Up to date"/"Update available" label built in
         _build_status_bar(). Just a status/link, not an auto-updater.
         """
+        if os.name == "nt":
+            self._update_status_button.setText("Windows development build")
+            self._update_status_button.setEnabled(False)
+            return
         # The channel is read here, on the GUI thread; the worker only fetches.
         channel = effective_update_channel(
             gui_settings.load_gui_settings().get("update_channel"), __version__

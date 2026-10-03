@@ -336,6 +336,7 @@ class PlayPage(QWidget):
         runner_layout.addLayout(cancel_row)
 
         grid.addWidget(runner_card, 1)
+        runner_card.setVisible(os.name != "nt")
         grid.addWidget(target_card, 1)
 
         root.addLayout(grid)
@@ -407,6 +408,11 @@ class PlayPage(QWidget):
         )
         options_layout.addWidget(self.custom_options_edit)
         root.addWidget(options_card)
+        if os.name == "nt":
+            self.custom_options_edit.setPlaceholderText('Optional arguments, e.g. -dbg')
+            self.custom_options_edit.setToolTip(
+                'Extra arguments for direct Anomaly launches. Configure GAMMA target arguments in MO2.'
+            )
 
         # -- folders card -----------------------------------------------------
         folders_card, folders_layout = make_card()
@@ -500,6 +506,13 @@ class PlayPage(QWidget):
         dialog.exec()
 
     def _reload_runners(self) -> None:
+        if os.name == "nt":
+            self.runner_combo.blockSignals(True)
+            self.runner_combo.clear()
+            self.runner_combo.addItem("Native Windows", "native")
+            self.runner_combo.blockSignals(False)
+            self.prefix_edit.clear()
+            return
         current = self.runner_combo.currentData()
         self.runner_combo.blockSignals(True)
         self.runner_combo.clear()
@@ -531,6 +544,8 @@ class PlayPage(QWidget):
         self._update_runner_hint(self.runner_combo.currentData())
 
     def _fetch_proton_releases(self) -> None:
+        if os.name == "nt":
+            return
         def _work() -> list[dict]:
             return fetch_ge_proton_releases(count=100)
 
@@ -845,7 +860,7 @@ class PlayPage(QWidget):
             # unpredictable inherited cwd instead of a stable, obvious location.
             prefix = str(Path(prefix).resolve())
         runner = resolve_runner(kind, prefix)
-        if gui_settings.load_gui_settings().get("always_gamemoderun"):
+        if os.name != "nt" and gui_settings.load_gui_settings().get("always_gamemoderun"):
             gamemoderun = available_commands().get("gamemoderun")
             if gamemoderun and (not runner.wrapper or runner.wrapper[0] != gamemoderun):
                 runner.wrapper.insert(0, gamemoderun)
@@ -874,6 +889,12 @@ class PlayPage(QWidget):
                 profile=self._active_profile_name(),
             )
         options_str = self.custom_options_edit.text().strip()
+        if os.name == "nt":
+            if direct and options_str:
+                from ..windows import split_arguments
+
+                command.extend(split_arguments(options_str))
+            return command, env, cwd
         if options_str:
             try:
                 tokens = shlex.split(options_str)
@@ -965,7 +986,12 @@ class PlayPage(QWidget):
             self.direct_button.setEnabled(False)
             self._build_chips(ok=False, runner=None)
             return
-        self.preview_label.setPlainText(shlex.join(command))
+        if os.name == "nt":
+            from ..windows import format_command
+
+            self.preview_label.setPlainText(format_command(command))
+        else:
+            self.preview_label.setPlainText(shlex.join(command))
         self.preview_label.setStyleSheet("")
         # Anomaly-direct availability is independent of the MO2/target
         # pipeline: with only Anomaly installed, Launch Anomaly must work.
@@ -1019,6 +1045,12 @@ class PlayPage(QWidget):
             if widget is not None:
                 widget.deleteLater()
         chips: list[tuple[str, bool]] = []
+        if os.name == "nt":
+            label = QLabel("Native Windows")
+            label.setObjectName("dim")
+            self.chips_row.addWidget(label)
+            self.chips_row.addStretch(1)
+            return
         # The GE-Proton build that will actually be used for this launch
         # (not every installed build - with several installed that made
         # this chip very wide). Both an explicit pick and "auto" resolve
@@ -1256,7 +1288,7 @@ class PlayPage(QWidget):
                 if direct
                 else ("Mod Organizer 2" if open_mo2 else "GAMMA")
             )
-            monitoring_mo2 = not direct and os.name != "nt"
+            monitoring_mo2 = not direct
             # Snapshot pre-existing MO2 processes before spawning so handoff
             # detection can tell this launch's own instance apart from one
             # the user already had open (see mo2_pids() docstring) - taken
@@ -1298,7 +1330,7 @@ class PlayPage(QWidget):
             self._discord_wanted = False
             if is_game_session:
                 gui_state = gui_settings.load_gui_settings()
-                if gui_state.get("discord_rpc_enabled"):
+                if os.name != "nt" and gui_state.get("discord_rpc_enabled"):
                     self._discord_wanted = True
                     self._discord_started_at = time.time()
                     self._try_start_discord_presence()
@@ -1599,6 +1631,16 @@ class PlayPage(QWidget):
 
     def _on_launch_check(self, label: str, command: list[str], log_path: Path) -> None:
         """Check the wrapper and, for MO2, the handoff process."""
+        if os.name == "nt" and self._game_exe_name:
+            # Native MO2 remains our live Popen process throughout gameplay;
+            # the Wine handoff branch only runs after Popen exits.
+            game_pids = exe_pids(self._game_exe_name) - self._pre_launch_game_pids
+            if game_pids:
+                self._game_seen = True
+            elif self._game_seen:
+                self._record_playtime()
+                self._game_exe_name = None
+                self._check_for_crash()
         # Crash-loop breaker, checked before anything else on every tick. A
         # prefix carrying another Wine's ntdll makes every process fault;
         # Wine answers each fault by starting winedbg, whose process faults
@@ -1725,7 +1767,7 @@ class PlayPage(QWidget):
                 if detail:
                     msg += f"\n\nLast log lines:\n{detail}"
                 self._set_result(msg, error=True)
-                if runner_graphics_error(detail):
+                if os.name != "nt" and runner_graphics_error(detail):
                     graphics_message = (
                         "The game started through WineD3D instead of DXVK/Vulkan.\n\n"
                         "Install the correct Vulkan driver for the graphics card, "
@@ -1733,7 +1775,7 @@ class PlayPage(QWidget):
                         "PROTON_USE_WINED3D=1 from Custom Launch Options if present."
                     )
                     QMessageBox.warning(self, tr("DXVK/Vulkan Problem"), graphics_message)
-                elif runner_prefix_error(detail):
+                elif os.name != "nt" and runner_prefix_error(detail):
                     runner = self._runner()
                     compatibility_message = (
                         "The selected Wine/Proton runner could not use the configured "

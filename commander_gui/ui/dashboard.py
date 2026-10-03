@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer
@@ -703,6 +704,11 @@ class DashboardPage(QWidget):
         """Same item list/order as the Play page's own runner combo."""
         combo.blockSignals(True)
         combo.clear()
+        if os.name == "nt":
+            combo.addItem("Native Windows", "native")
+            combo.setEnabled(False)
+            combo.blockSignals(False)
+            return
         combo.addItem(tr("Auto-detect (latest GE-Proton)"), "auto")
         extra_protons = find_extra_protons()
         if extra_protons:
@@ -1193,6 +1199,7 @@ class DashboardPage(QWidget):
         deck_button.setCursor(Qt.CursorShape.PointingHandCursor)
         deck_button.clicked.connect(lambda: switch_mode(self.window, deck=True))
         header.addWidget(deck_button)
+        deck_button.setVisible(os.name != "nt")
         layout.addLayout(header)
         profile = self.settings.active_profile
         # clear_layout() above just deleted the previous render's Play

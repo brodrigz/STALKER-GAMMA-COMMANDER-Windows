@@ -84,6 +84,9 @@ class BackupInfo:
 
 
 def backups_root() -> Path:
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "stalker-gamma-commander" / "backups"
     base = os.environ.get("XDG_DATA_HOME") or os.path.join(Path.home(), ".local", "share")
     return Path(base) / "stalker-gamma-commander" / "backups"
 

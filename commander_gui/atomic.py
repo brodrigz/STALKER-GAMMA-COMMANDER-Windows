@@ -39,8 +39,15 @@ def _write(path: Path, data: bytes, *, lock: bool) -> None:
         path = Path(os.path.realpath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_fd = None
+    windows_lock = None
     try:
         with _WRITE_LOCK:
+            if os.name == "nt" and lock:
+                from PySide6.QtCore import QLockFile
+
+                windows_lock = QLockFile(str(path.parent / f".{path.name}.lock"))
+                if not windows_lock.tryLock(5000):
+                    raise OSError(f"Another process is writing {path}")
             if fcntl is not None and lock:
                 lock_fd = os.open(
                     path.parent / f".{path.name}.lock",
@@ -85,3 +92,6 @@ def _write(path: Path, data: bytes, *, lock: bool) -> None:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)
         raise
+    finally:
+        if windows_lock is not None:
+            windows_lock.unlock()
