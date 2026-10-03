@@ -397,6 +397,7 @@ def _should_auto_retry(enabled: bool, attempt_count: int, output: str) -> bool:
     return (
         enabled
         and attempt_count < _AUTO_RETRY_MAX
+        and "moddb rate limit:" not in (output or "").lower()
         and _looks_like_large_repo_failure(output)
     )
 
@@ -1317,6 +1318,8 @@ class InstallPage(QWidget):
                 "Some large files from GAMMA's GitHub repos aren't kept in the cache, so those download again.",
                 button=tr(_RESUME_BUTTON_LABEL),
             )
+            if self.full_progress.moddb_access._state == "rate_limited":
+                hint = self.full_progress.moddb_access.instructions.text()
             if gave_up:
                 hint = (
                     tr(

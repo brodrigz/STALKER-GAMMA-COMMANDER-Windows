@@ -63,28 +63,32 @@ class ModDbAccessPanel(QWidget):
         self.button.setEnabled(False)
         if self._state in {"required", "failed", "verifying"}:
             self.instructions.setText("This operation ended. Start it again to verify and continue from saved download progress.")
-        self.status.setText("Cloudflare: Session ended")
+        if self._state != "rate_limited":
+            self.status.setText("Cloudflare: Session ended")
         self._update_attention()
 
     def _update_attention(self):
-        required = self._active and self._state in {"required", "failed"}
+        required = (self._active and self._state in {"required", "failed"}) or self._state == "rate_limited"
         self.setStyleSheet("#moddbAccess { background: #42331d; border: 1px solid #e9b45c; border-radius: 6px; }" if required else "")
-        self.button.setText("Verify now in browser" if required else "Verify in browser")
+        self.button.setText("Wait before retrying" if self._state == "rate_limited" else "Verify now in browser" if required else "Verify in browser")
         service = getattr(QApplication.instance(), "_desktop_notifications", None)
         if service is not None:
             service.set_verification_required(self, required)
 
     def _set_state(self, state, message, expires=None):
         labels = {"idle": "Not checked", "required": "Verification required", "verifying": "Verifying…",
-                  "ready": "Cookie accepted", "not_needed": "No cookie needed", "failed": "Verification needed — retry"}
+                  "ready": "Cookie accepted", "not_needed": "No cookie needed", "failed": "Verification needed — retry",
+                  "rate_limited": "Too many requests"}
         if state not in labels:
             return
         self._state = state
         self._expires = expires if isinstance(expires, (int, float)) and expires > 0 else None
-        self.status.setText(("⚠ " if state in {"required", "failed"} else "") + "Cloudflare: " + labels[state])
+        warning = state in {"required", "failed", "rate_limited"}
+        provider = "ModDB: " if state == "rate_limited" else "Cloudflare: "
+        self.status.setText(("⚠ " if warning else "") + provider + labels[state])
         self.instructions.setText(message)
         self.button.setEnabled(self._active and state in {"required", "failed"})
-        self.status.setStyleSheet("color: #e9b45c;" if state in {"required", "failed"} else "")
+        self.status.setStyleSheet("color: #e9b45c;" if warning else "")
         self._update_attention()
         if state == "ready" and self._expires:
             try:

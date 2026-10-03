@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import html
 import json
 import logging
 import os
@@ -33,6 +34,10 @@ class ModDbSessionError(Exception):
     """Safe diagnostic: never include cookies, HTML or signed download URLs."""
 
 
+class ModDbRateLimitError(ModDbSessionError):
+    """ModDB has asked this connection to stop requesting pages."""
+
+
 def validate_url(url: str) -> str:
     parsed = urlsplit(url)
     if (parsed.scheme != "https" or parsed.netloc.lower() != "www.moddb.com"
@@ -53,6 +58,26 @@ class Page:
     status: int
     headers: dict[str, str]
     body: str
+
+    @property
+    def rate_limit_message(self) -> str | None:
+        # ModDB can serve its own bot/rate-limit page behind Cloudflare, with
+        # a 403 or even 200. Check its specific text before generic challenges.
+        text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", self.body))).lower()
+        blocked = ("too many requests" in text and "hitting our server repeatedly" in text
+                   and "check back" in text)
+        if self.status != 429 and not blocked:
+            return None
+        cooldown = re.search(r"check back in\s+(\d{1,6})\s*(mins?|minutes?|hours?|hrs?|seconds?|secs?)\b", text)
+        wait = "Wait before restarting this operation."
+        if cooldown:
+            value, unit = int(cooldown[1]), cooldown[2]
+            unit = "minute" if unit.startswith("min") else "hour" if unit.startswith("h") else "second"
+            wait = f"ModDB says to check back in {value} {unit}{'' if value == 1 else 's'}."
+        elif re.fullmatch(r"[0-9]{1,9}", self.headers.get("retry-after", "")):
+            wait = f"ModDB asks you to wait {int(self.headers['retry-after'])} seconds."
+        return ("ModDB rate limit: too many requests. " + wait
+                + " Browser verification will not remove this limit. Saved download progress is kept.")
 
     @property
     def challenged(self) -> bool:
@@ -108,6 +133,17 @@ class ModDbSession:
         self._user_agent = ""
         self._clearance = ""
         self._expires = None
+        self._rate_limit_error = None
+
+    def _check_rate_limit(self, page):
+        message = page.rate_limit_message
+        if message:
+            self._rate_limit_error = message
+            with self._approval_lock:
+                self._waiting = False
+                self._approved.clear()
+            self._status("rate_limited", message)
+            raise ModDbRateLimitError(message)
 
     def _status(self, state, message):
         self.access_changed({"state": state, "message": message, "expires": self._expires})
@@ -139,6 +175,8 @@ class ModDbSession:
                 asyncio.run(self._verify_until_stopped(url))
                 self._generation += 1
                 return
+            except ModDbRateLimitError:
+                raise
             except Exception as exc:  # noqa: BLE001 - browser diagnostics may contain cookies
                 if self.stopped.is_set():
                     raise ModDbSessionError("ModDB verification cancelled.") from None
@@ -205,8 +243,10 @@ class ModDbSession:
                     await solver.driver.start()
                 await solver.driver.main_tab.send(upstream.cdp.browser.set_download_behavior(behavior="deny"))
                 await solver.request_page(url)
+                self._check_rate_limit(Page(200, {}, await solver.driver.main_tab.get_content()))
                 await solver.set_user_agent_metadata(await solver.get_user_agent())
                 for _ in range(20):
+                    self._check_rate_limit(Page(200, {}, await solver.driver.main_tab.get_content()))
                     cookies = await solver.get_cookies()
                     if solver.extract_clearance_cookie(cookies) is not None:
                         break
@@ -214,6 +254,7 @@ class ModDbSession:
                         await solver.solve_challenge()
                         break
                     await asyncio.sleep(0.5)
+                self._check_rate_limit(Page(200, {}, await solver.driver.main_tab.get_content()))
                 cookies = await solver.get_cookies()
                 clearance = next((cookie for cookie in cookies
                                   if cookie["name"] == "cf_clearance"
@@ -272,6 +313,10 @@ class ModDbSession:
         with self._lock:
             if self.stopped.is_set():
                 raise ModDbSessionError("ModDB request cancelled.")
+            # CLI retries/concurrent addons must not keep hitting a rate-limited
+            # origin. The user can restart the operation after the stated wait.
+            if self._rate_limit_error:
+                raise ModDbRateLimitError(self._rate_limit_error)
             verified = False
             if verification_required and generation == self._generation:
                 self._wait_for_verification(url, "Download returned HTTP 403. Cloudflare verification is required; saved download progress is kept.")
@@ -279,6 +324,7 @@ class ModDbSession:
             redirects = 0
             while redirects < 6:
                 page = self._fetch(url)
+                self._check_rate_limit(page)
                 if page.challenged or page.status == 403:
                     message = ("ModDB still rejects this session. Click Verify in browser to retry, or cancel and try later."
                                if verified else "ModDB requires Cloudflare verification (HTTP 403 / security challenge). Downloads waiting for links will continue afterward.")

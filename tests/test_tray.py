@@ -172,6 +172,31 @@ def test_warning_remains_visible_when_os_suppresses_balloons(tray):
     assert service.verification_action.isVisible()
 
 
+def test_rate_limit_warning_survives_operation_end_without_verify_button(tray):
+    _app, window, service, _ = tray
+    verify = Mock()
+    panel = ModDbAccessPanel(verify, window)
+    panel.start()
+    message = "ModDB rate limit: too many requests. ModDB says to check back in 33 minutes."
+    panel._set_state("required", "Verify")
+    panel._set_state("rate_limited", message)
+    assert service.tray.showMessage.call_args.args[0] == "ModDB is limiting requests"
+    assert "33 minutes" in service.tray.showMessage.call_args.args[1]
+    assert service.tray.showMessage.call_count == 2
+    panel._set_state("rate_limited", message)
+    assert service.tray.showMessage.call_count == 2
+    panel.finish()
+    assert "ModDB: Too many requests" in panel.status.text()
+    assert panel.instructions.text() == message
+    assert not panel.button.isEnabled()
+    panel.button.click()
+    verify.assert_not_called()
+    assert service.verification_action.isVisible()
+    assert "ModDB is limiting" in window.set_verification_required.call_args.args[1]
+    panel.reset()
+    assert not service.verification_action.isVisible()
+
+
 def test_global_banner_navigates_to_waiting_download_with_console_hidden(tray, monkeypatch, tmp_path):
     from commander_gui import gui_settings
     from commander_gui.settings import CliSettings
@@ -226,6 +251,14 @@ def test_global_banner_navigates_to_waiting_download_with_console_hidden(tray, m
         assert window.verification_banner.isHidden()
         runner.verify_moddb.assert_called_once()
         area.on_cancelled()
+        area.moddb_access.start()
+        area.on_line(ACCESS_PREFIX + json.dumps({"state": "rate_limited", "message": "ModDB says to check back in 33 minutes."}))
+        assert not window.verification_banner.isHidden()
+        assert "ModDB is limiting" in window.verification_banner_text.text()
+        assert "33 minutes" in area.moddb_access.instructions.text()
+        assert not area.moddb_access.button.isEnabled()
+        area.on_finished(1, "ModDB rate limit: too many requests.")
+        assert not window.verification_banner.isHidden()
         question.return_value = QMessageBox.StandardButton.Yes
         service.request_exit()
         quit_app.assert_called_once()

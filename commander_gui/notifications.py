@@ -19,6 +19,7 @@ class DesktopNotifications(QObject):
         self.window = None
         self._exiting = False
         self._attention = {}
+        self._attention_states = {}
         self._observed_sources = weakref.WeakSet()
         self.tray = QSystemTrayIcon(self)
         icon = app.windowIcon()
@@ -94,21 +95,24 @@ class DesktopNotifications(QObject):
 
     def set_verification_required(self, source, required):
         key = id(source)
-        is_new = required and key not in self._attention
+        state = getattr(source, "_state", None)
+        is_new = required and (key not in self._attention or self._attention_states.get(key) != state)
         if is_new:
             self._attention[key] = weakref.ref(source)
+            self._attention_states[key] = state
             if source not in self._observed_sources:
                 self._observed_sources.add(source)
                 source.destroyed.connect(self._remove_destroyed_sources)
         elif not required:
             self._attention.pop(key, None)
+            self._attention_states.pop(key, None)
         self._refresh_attention()
         if is_new:
             if QSystemTrayIcon.isSystemTrayAvailable() and QSystemTrayIcon.supportsMessages():
                 self.tray.show()
                 self.tray.showMessage(
-                    "Downloads need Cloudflare verification",
-                    "Open Commander and click Verify in browser. Saved download progress is kept.",
+                    "ModDB is limiting requests" if state == "rate_limited" else "Downloads need Cloudflare verification",
+                    source.instructions.text() if state == "rate_limited" else "Open Commander and click Verify in browser. Saved download progress is kept.",
                     QSystemTrayIcon.MessageIcon.Warning, 30000,
                 )
             if self.window is not None and not self.window.isActiveWindow():
@@ -118,15 +122,21 @@ class DesktopNotifications(QObject):
     def _remove_destroyed_sources(self):
         self._attention = {key: ref for key, ref in self._attention.items()
                            if ref() is not None and isValid(ref())}
+        self._attention_states = {key: state for key, state in self._attention_states.items() if key in self._attention}
         self._refresh_attention()
 
     def _refresh_attention(self):
         required = bool(self._attention)
+        limited = any(state == "rate_limited" for state in self._attention_states.values())
         self.tray.setIcon(self.app.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning) if required else self._icon)
-        self.tray.setToolTip("Commander — Cloudflare verification required" if required else "STALKER GAMMA Commander")
+        self.tray.setToolTip("Commander — ModDB rate limit" if limited else "Commander — Cloudflare verification required" if required else "STALKER GAMMA Commander")
         if self.window is not None and isValid(self.window):
             self.verification_action.setVisible(required)
-            self.window.set_verification_required(required)
+            self.verification_action.setText("ModDB rate limit — details…" if limited else "Cloudflare verification required…")
+            if limited:
+                self.window.set_verification_required(True, "ModDB is limiting requests. Wait before restarting downloads; saved progress is kept.")
+            else:
+                self.window.set_verification_required(required)
 
     @Slot(str, str)
     def _show(self, title, message):

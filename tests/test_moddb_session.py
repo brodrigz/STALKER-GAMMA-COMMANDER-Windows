@@ -9,6 +9,7 @@ import pytest
 
 from commander_gui.moddb_session import (
     ModDbBridge,
+    ModDbRateLimitError,
     ModDbSession,
     ModDbSessionError,
     Page,
@@ -18,6 +19,69 @@ from commander_gui.moddb_session import (
 
 START = "https://www.moddb.com/addons/start/306772"
 CHALLENGE = Page(403, {"cf-mitigated": "challenge"}, "window._cf_chl_opt = {}")
+RATE_LIMIT = """<h1>Too Many Requests</h1><p>It appears you are a bot, hitting our server repeatedly.
+If you would like API access and to be whitelisted contact us. Otherwise limit the number of
+requests you perform and check back in <b>33mins</b>. Follow us on X or Facebook for the latest updates:</p>"""
+
+
+@pytest.mark.parametrize("status", [200, 403, 429])
+def test_rate_limit_body_stops_requests_without_verification(monkeypatch, status):
+    from unittest.mock import Mock
+
+    states = []
+    session = ModDbSession(access_changed=states.append)
+    fetch = Mock(return_value=Page(status, {}, RATE_LIMIT))
+    verify = Mock()
+    monkeypatch.setattr(session, "_fetch", fetch)
+    monkeypatch.setattr(session, "_wait_for_verification", verify)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        tasks = [pool.submit(session.request, START) for _ in range(4)]
+        for task in tasks:
+            with pytest.raises(ModDbRateLimitError, match="33 minutes"):
+                task.result(timeout=2)
+    # The CLI's repeated calls must also fail locally, even if asking for CF.
+    with pytest.raises(ModDbRateLimitError):
+        session.request(START, verification_required=True)
+    fetch.assert_called_once()
+    verify.assert_not_called()
+    assert not session.approve_verification()
+    assert [s["state"] for s in states] == ["rate_limited"]
+    assert "<h1>" not in states[0]["message"]
+
+
+def test_429_without_body_uses_retry_after_and_unknown_wait_is_not_invented():
+    assert "120 seconds" in Page(429, {"retry-after": "120"}, "").rate_limit_message
+    assert "Wait before restarting" in Page(429, {}, "").rate_limit_message
+    assert Page(200, {}, "Addon discussing Too Many Requests").rate_limit_message is None
+    assert CHALLENGE.rate_limit_message is None
+
+
+def test_rate_limit_after_browser_verification_is_not_treated_as_bad_cookie(monkeypatch):
+    states = []
+    session = ModDbSession()
+
+    def changed(state):
+        states.append(state["state"])
+        if state["state"] == "required":
+            session.approve_verification()
+
+    async def verify(url):
+        session._check_rate_limit(Page(200, {}, RATE_LIMIT))
+
+    session.access_changed = changed
+    monkeypatch.setattr(session, "_fetch", lambda _: CHALLENGE)
+    monkeypatch.setattr(session, "_verify", verify)
+    with pytest.raises(ModDbRateLimitError, match="33 minutes"):
+        session.request(START)
+    assert states == ["required", "verifying", "rate_limited"]
+    assert not session.approve_verification()
+
+
+def test_rate_limit_disables_full_install_auto_retry():
+    from commander_gui.ui.install_page import _should_auto_retry
+
+    output = "Error downloading from Gamma Large Files Repo\nModDB rate limit: too many requests."
+    assert not _should_auto_retry(True, 0, output)
 
 
 def test_single_verification_shared_across_concurrent_addons(monkeypatch):
