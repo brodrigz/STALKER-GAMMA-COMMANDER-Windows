@@ -59,6 +59,7 @@ PROGRESS_PREFIX = "@commander-progress "
 _PROGRESS_OPERATIONS = {
     "Download", "Extract", "Expand", "Check MD5", "Skipped", "Complete",
     "Queued", "Resolving", "Retrying", "Resuming", "Verifying", "Downloaded", "Failed",
+    "Waiting for verification",
 }
 
 

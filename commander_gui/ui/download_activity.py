@@ -111,11 +111,13 @@ class ProgressTable(QTableWidget):
             "Queued": tr("Queued"), "Resolving": tr("Getting download link"),
             "Retrying": tr("Retrying"), "Resuming": tr("Resuming"),
             "Verifying": tr("Verifying archive"), "Downloaded": tr("Downloaded"),
+            "Waiting for verification": tr("Waiting for verification"),
             "Failed": tr("Failed"),
         }.get(event.operation, event.operation)
         if done and event.operation in {"Extract", "Expand"}:
             status = tr("Extracted")
         self.item(row, 1).setText(status)
+        self.item(row, 1).setToolTip(status)
         bar = self.cellWidget(row, 2)
         busy = event.operation in {"Queued", "Resolving", "Retrying", "Verifying"} or (
             event.structured and event.operation in {"Download", "Resuming"} and event.total_bytes is None
@@ -136,9 +138,15 @@ class ProgressTable(QTableWidget):
         self.item(row, 3).setText(
             format_size(speed) + "/s" if event.operation in {"Download", "Resuming"} and speed is not None and speed > 0 else "—"
         )
+        self.item(row, 3).setToolTip(
+            tr("This source reports progress without download speed.")
+            if event.operation in {"Download", "Resuming"} and speed is None else ""
+        )
         if self._paused and not done:
             self._paint_paused(row, event)
-        else:
+        elif not self._timer.isActive():
+            # Restarting on each update prevents the timer from firing while
+            # other downloads keep reporting progress more than once a second.
             self._timer.start()
         self.changed.emit()
 
@@ -180,8 +188,13 @@ class ProgressTable(QTableWidget):
             if event.operation in {"Download", "Resuming"} and now - self._updated[name] > 3:
                 row = self._rows[name]
                 self.item(row, 3).setText("—")
+                self.item(row, 3).setToolTip(tr("No recent download speed reported."))
                 if event.percent < 1 and now - self._updated[name] > 8:
                     self.item(row, 1).setText(tr("Waiting for data"))
+                    self.item(row, 1).setToolTip(tr("No download progress reported for over 8 seconds. Waiting for the source or the next CLI status."))
+                    bar = self.cellWidget(row, 2)
+                    if bar.maximum() == 0:
+                        bar.setFormat(tr("Waiting for data"))
 
     def finish_all(self) -> None:
         self._timer.stop()

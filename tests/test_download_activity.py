@@ -2,6 +2,7 @@ import json
 from unittest.mock import patch
 
 import pytest
+from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
 from commander_gui.parsers import PROGRESS_PREFIX, parse_progress_line
@@ -72,6 +73,44 @@ def test_expired_speed_and_interrupted_busy_state(area):
     assert area.table.item(0, 1).text() == "Interrupted"
     assert area.table.cellWidget(0, 2).maximum() == 1000
     assert not area.table._timer.isActive()
+
+
+def test_active_downloads_do_not_prevent_idle_rows_from_refreshing(area):
+    # Keep one transfer busy while another stops reporting data. Exercise the
+    # event loop: calling _expire_speed directly misses timer starvation.
+    area.table._timer.setInterval(30)
+    area.table._timer.setTimerType(Qt.TimerType.PreciseTimer)
+    with patch("commander_gui.ui.download_activity.time.monotonic", return_value=10):
+        area.on_line(event("Idle", bytesDownloaded=50, totalBytes=100, bytesPerSecond=0))
+    pulse = QTimer()
+    pulse.setInterval(1)
+    pulse.setTimerType(Qt.TimerType.PreciseTimer)
+    pulse.timeout.connect(lambda: area.on_line(event("Active", bytesDownloaded=50, totalBytes=100, bytesPerSecond=2048)))
+    loop = QEventLoop()
+    with patch("commander_gui.ui.download_activity.time.monotonic", return_value=20):
+        pulse.start()
+        QTimer.singleShot(180, loop.quit)
+        loop.exec()
+    pulse.stop()
+    assert area.table.item(0, 1).text() == "Waiting for data"
+    assert area.table.item(1, 1).text() == "Downloading"
+    assert area.table.cellWidget(0, 2).value() == 500
+    area.on_line(event("Idle", percent=0.6, bytesDownloaded=60, totalBytes=100, bytesPerSecond=1024))
+    assert area.table.item(0, 1).text() == "Downloading"
+    assert area.table.item(0, 3).text() == "1.0 KB/s"
+
+
+def test_verification_wait_preserves_saved_progress_and_clears_speed(area):
+    area.on_line(event(bytesDownloaded=50, totalBytes=100, bytesPerSecond=8192))
+    area.on_line(event(operation="Waiting for verification", bytesDownloaded=50, totalBytes=100, bytesPerSecond=0))
+    assert area.table.item(0, 1).text() == "Waiting for verification"
+    assert area.table.item(0, 3).text() == "—"
+    assert area.table.cellWidget(0, 2).value() == 500
+    with patch("commander_gui.ui.download_activity.time.monotonic", return_value=10**12):
+        area.table._expire_speed()
+    assert area.table.item(0, 1).text() == "Waiting for verification"
+    area.on_line(event(operation="Resuming", bytesDownloaded=50, totalBytes=100, bytesPerSecond=0))
+    assert area.table.item(0, 1).text() == "Resuming"
 
 
 def test_resize_reset_and_console_independence(area):
