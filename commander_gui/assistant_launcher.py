@@ -47,6 +47,8 @@ def assistant_command(archive: str | Path | None = None) -> tuple[list[str], Pat
     root = project_root()
     bundled = root / "assistant" / "__main__.py"
     args = [] if archive is None else [str(Path(archive).expanduser().resolve())]
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--assistant", *args], Path(sys.executable).parent
     if bundled.is_file():
         return [sys.executable, "-m", "assistant", *args], root
 
@@ -72,6 +74,9 @@ def launch_assistant(archive: str | Path | None = None) -> subprocess.Popen[byte
         raise AssistantLaunchError("ASSISTANT is already running.")
     command, cwd = assistant_command(archive)
     env = os.environ.copy()
+    if getattr(sys, "frozen", False):
+        # Assistant is an independent app session, not a PyInstaller worker.
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     if command[1:3] == ["-m", "assistant"]:
         payload = str(cwd)
         current_pythonpath = env.get("PYTHONPATH", "")

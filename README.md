@@ -1,3 +1,127 @@
+# STALKER GAMMA COMMANDER — Windows fork
+
+Native Windows port in development. The first implementation milestone keeps
+the Python/PySide6 interface and uses the Windows `stalker-gamma.exe` backend.
+Linux compatibility is not a requirement for this fork.
+
+From PowerShell at the repository root, with Python 3.10 x64, Git, .NET SDK
+10.0.401 and Visual C++ build tools (including a Windows SDK) installed:
+
+```powershell
+.\scripts\Setup-Windows.ps1
+.\run.ps1
+```
+
+Setup builds our [CLI fork](https://github.com/brodrigz/stalker-gamma-cli) from
+the exact commit in `cli/windows-backend.json`, and installs Python dependencies
+into `.venv`. It uses a clean sibling `../stalker-gamma-cli` checkout at that
+commit when available; otherwise it clones the pinned source under `build`.
+`-CliSource <path>` selects a different clean checkout at the pinned commit.
+Native helper dependencies come from a checksum-verified upstream archive;
+the CLI executable is compiled from our source. Generated binaries in
+`cli/windows` are excluded from Git and reused after source/version/hash checks.
+`-ForceCliBuild` forces rebuilding. Update the manifest commit when advancing
+the fork. There is no Git submodule or copied CLI source tree in Commander.
+
+Commander and the native CLI share `%APPDATA%\stalker-gamma\settings.json`.
+GUI preferences and logs also live there; save/settings backups live under
+`%LOCALAPPDATA%\stalker-gamma-commander\backups`. Select your actual Anomaly,
+GAMMA and cache folders in Profiles or Install before running installation commands.
+
+Existing Windows installations are detected through `.Grok's Modpack Installer`.
+Updates reads its installed build marker and compares installed mods' `meta.ini`
+archive names with the official addon catalogue. The Windows metadata does not
+establish installed archive checksums, so affected addons are marked for refresh.
+Before applying updates, Commander imports matching installed addons into the
+CLI's missing `modpack_maker_list.json`; existing valid snapshots are preserved.
+Unknown hashes stay unknown and force a refresh in our CLI. Updates preserve
+custom MO2 entries, enabled states and relative ordering. Missing addon metadata
+does not prevent version or release-note checks, but applying requires a usable
+installed-addon baseline. Obsolete official API URLs migrate to the same
+GitHub-hosted catalogue used by the CLI; custom catalogue URLs are preserved.
+If the default `G.A.M.M.A` profile is empty and exactly one populated MO2 profile
+exists, Commander saves that profile selection. The Profiles page also lists
+existing MO2 profiles for manual selection when the choice is ambiguous.
+
+Implemented so far: native backend discovery, supported CLI arguments, Windows
+archive extraction, native executable argument parsing, MO2/game process guards,
+installer process-tree cancellation, cross-process atomic-write locking, native
+folder opening, and removal of Wine/Proton controls from the main launch flow.
+The Windows CLI does not accept the Linux bundle's custom
+`--progress-update-interval-ms` option; Windows invocations omit it.
+
+Windows runtime checks are available on Dashboard, Install and System Check.
+**Set up Windows runtimes** checks Visual C++ v14 and legacy DirectX libraries
+for both architectures and installs missing components using signed Microsoft
+installers. Setup requests Windows administrator permission when needed.
+Downloads support **Pause / Resume**, and desktop notifications use the Windows
+system tray (subject to Windows notification settings).
+
+The download panel shows Cloudflare access status. If a ModDB page or archive
+returns HTTP 403, click **Verify in browser** and finish the challenge. Commander
+waits for that click, then resumes automatically after verification; partial
+archives are retained. Cookie acceptance and expiry are shown without exposing
+the cookie itself. Failed verification can be retried from the same panel.
+
+This is a development build, not a finished Windows release. Discord integration,
+Steam/desktop shortcuts, autostart and self-updates remain to be ported. The UI
+disables or hides unsupported setup/integration actions. Install/update/repair
+and move/reset workflows still require end-to-end validation with a real GAMMA
+installation; CLI help and local archive tests do not establish that validation.
+The upstream Linux application updater and welcome release feed are disabled.
+
+Run the Windows milestone regression suite:
+
+```powershell
+$env:QT_QPA_PLATFORM = 'offscreen'
+.\.venv\Scripts\python.exe -m pytest tests/test_windows_port.py tests/test_windows_packaging.py tests/test_windows_install_layout.py tests/test_game_backup.py tests/test_flipped_load_order.py tests/test_fomod_wizard.py tests/test_mod_manager_features.py tests/test_mod_install.py -q
+```
+
+Build the standalone Windows x64 release from Windows:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-build-windows.txt
+.\scripts\Build-Windows.ps1
+```
+
+The build bundles Python, PySide6/Qt, fonts, assets, Commander Assistant and the
+complete pinned native CLI. It produces a versioned portable ZIP and SHA-256
+checksums in `dist/releases`. Extract the whole ZIP and run
+`STALKER-GAMMA-COMMANDER.exe`; users do not need Python installed. Keep its
+`_internal` folder beside the executable. Run the same executable with
+`--assistant` to open Assistant, optionally followed by archive paths.
+
+To also build the Windows 11 x64 per-user installer:
+
+```powershell
+.\scripts\Setup-InnoSetup.ps1
+.\scripts\Build-Windows.ps1 -Installer
+```
+
+The compiler setup verifies and installs Inno Setup 6.7.3 under `build/tools`
+with per-user setup registration and no administrator prompt. An existing
+Inno Setup 6.3+ installation can also be used; pass `-InnoCompilerPath` to select
+its `ISCC.exe`. The application installer creates Start Menu entries for
+Commander and Assistant and offers a desktop shortcut. Application settings,
+backups and game installations stay separate from the installed program files.
+
+Builds test both packaged interfaces, resource loading, the native CLI and real
+archive extraction, then repeat those checks on the extracted portable ZIP in
+a path containing spaces and non-ASCII characters. To repeat those checks:
+
+```powershell
+.\scripts\Test-WindowsPackage.ps1 -PortableArchive .\dist\releases\STALKER-GAMMA-COMMANDER-1.3.0-windows-x64-portable.zip
+```
+
+Release bundles include licenses, dependency/version metadata and a snapshot of
+the application/build sources and pinned CLI sources. Windows CI builds and uploads the portable ZIP,
+installer and checksums after the regression and packaged-app checks pass.
+
+The remaining documentation below describes the upstream Linux application and
+its feature set. Its Linux installation instructions do not apply to this fork.
+
+---
+
 <div align="center">
 
 # S.T.A.L.K.E.R. G.A.M.M.A. COMMANDER

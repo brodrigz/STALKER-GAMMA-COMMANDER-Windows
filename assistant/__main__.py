@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -32,7 +33,10 @@ def filtered_message_handler(previous):
         if previous is not None:
             previous(mode, context, message)
         else:
-            sys.stderr.write(f"{message}\n")
+            if sys.stderr is not None:
+                sys.stderr.write(f"{message}\n")
+            else:
+                logging.getLogger("commander_gui").warning("Assistant Qt: %s", message)
 
     return handler
 

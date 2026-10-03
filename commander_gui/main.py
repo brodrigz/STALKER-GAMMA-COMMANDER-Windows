@@ -117,7 +117,12 @@ def _quiet_qt_message_handler(mode: QtMsgType, context, message: str) -> None:
     if _PREVIOUS_QT_HANDLER is not None:
         _PREVIOUS_QT_HANDLER(mode, context, message)
     else:
-        sys.stderr.write(message + "\n")
+        if sys.stderr is not None:
+            sys.stderr.write(message + "\n")
+        else:
+            from .applog import get_logger
+
+            get_logger().warning("Qt: %s", message)
 
 
 def _acquire_instance_lock() -> QLockFile | None:

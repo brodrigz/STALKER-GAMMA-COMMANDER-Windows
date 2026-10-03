@@ -1,0 +1,23 @@
+STALKER GAMMA COMMANDER — Windows x64
+
+Extract the complete ZIP to a writable folder, then open
+STALKER-GAMMA-COMMANDER.exe. Keep its _internal folder beside the executable.
+Python, Qt, Assistant and the native GAMMA CLI are included.
+
+To open the log analyzer separately:
+STALKER-GAMMA-COMMANDER.exe --assistant
+STALKER-GAMMA-COMMANDER.exe --assistant "C:\path\to\log dump.zip"
+
+Commander settings and logs: %APPDATA%\stalker-gamma
+Save/settings backups: %LOCALAPPDATA%\stalker-gamma-commander\backups
+Choose your Anomaly, GAMMA and cache folders in the application.
+
+The installer installs only Commander for the current user. Removing Commander
+preserves its settings, backups, and your separate game installation.
+
+This build retains the Windows port's current feature availability. Windows
+packaging does not install the game's Visual C++ or DirectX prerequisites.
+
+See build-info.json for dependency versions, LICENSE.txt and licenses/ for
+bundled notices, and source/commander-source.zip for this build's application
+source and packaging scripts.

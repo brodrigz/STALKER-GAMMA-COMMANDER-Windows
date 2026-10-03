@@ -1,0 +1,49 @@
+name: Windows build
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.401'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          architecture: x64
+      - name: Prepare Python
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt -r requirements-build-windows.txt
+      - name: Prepare pinned backend
+        run: .\scripts\Setup-Windows.ps1 -SkipPython
+      - name: Windows and retained feature tests
+        run: >-
+          .\.venv\Scripts\python.exe -m pytest
+          tests/test_windows_port.py tests/test_windows_packaging.py tests/test_windows_install_layout.py tests/test_game_backup.py
+          tests/test_flipped_load_order.py tests/test_fomod_wizard.py
+          tests/test_mod_manager_features.py tests/test_mod_install.py -q
+      - name: Prepare pinned installer compiler
+        run: .\scripts\Setup-InnoSetup.ps1
+      - name: Build and smoke-test portable release and installer
+        run: .\scripts\Build-Windows.ps1 -Installer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-release
+          path: dist/releases/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-packaging-reports
+          path: build/windows/smoke reports/*.json
+          if-no-files-found: ignore

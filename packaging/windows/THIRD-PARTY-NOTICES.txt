@@ -1,0 +1,35 @@
+STALKER GAMMA Commander
+Python/Qt interface originally by SSH-Kitty; Windows fork contributors.
+Application license: GPL-3.0. See LICENSE.txt and source/commander-source.zip.
+Original project: https://github.com/SSH-Kitty/STALKER-GAMMA-COMMANDER
+
+stalker-gamma-cli by FaithBeam, ArchiTecCTT and Commander fork contributors, GPL-3.0
+The Commander fork is compiled from pinned source under _internal/cli/windows.
+Source revision, dependency archive and executable checksums: build-info.json.
+Source: https://github.com/brodrigz/stalker-gamma-cli
+Exact build sources: source/stalker-gamma-cli-source.zip.
+Its bundle includes 7-Zip, libgit2, curl-impersonate, cloudscraper and a CA bundle.
+Upstream build and dependency sources: https://github.com/FaithBeam/stalker-gamma-cli/blob/1.35.0/build/win/build.ps1
+7-Zip: https://www.7-zip.org/license.txt
+libgit2: https://github.com/libgit2/libgit2
+curl-impersonate: https://github.com/lwthiker/curl-impersonate
+cloudscraper: https://github.com/VeNoMouS/cloudscraper
+
+Python: https://www.python.org — Python-LICENSE.txt in licenses/.
+Qt / PySide6 / Shiboken: https://code.qt.io/cgit/pyside/pyside-setup.git/
+PySide6 distribution license metadata: LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only.
+Installed wheel license files are copied into licenses/.
+psutil: https://github.com/giampaolo/psutil — BSD-3-Clause.
+PyInstaller bootloader: https://github.com/pyinstaller/pyinstaller — GPL with
+the bootloader exception permitting distribution of bundled applications.
+Exo 2 font: https://github.com/google/fonts/tree/main/ofl/exo2 — SIL OFL 1.1.
+
+Dependency versions used for this build are recorded in build-info.json.
+
+CF-Clearance-Scraper by Xewdy444, MIT license.
+Source: https://github.com/Xewdy444/CF-Clearance-Scraper
+Pinned revision: 7bf176d1956d3fb6971f9d95c1bbee2f3a4f7d01.
+Unmodified solver: commander_gui/_vendor/cf_clearance_scraper.py in the source archive.
+License: _internal/commander_gui/_vendor/CF-Clearance-Scraper-LICENSE.txt.
+Browser helper dependencies and licenses are recorded in build-info.json and licenses/.
+The browser is discovered on the user's computer; no browser binary is distributed.
