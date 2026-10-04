@@ -1,11 +1,8 @@
 """Auto-repair helpers for GAMMA mod integrity verification.
 
-Given the failures reported by an MD5 scan (``integrity.scan_mods_md5``),
-these helpers figure out which mods can be re-downloaded and re-extracted
-through the official modpack list, and prepare the install for repair:
-the corrupt mod folder and its cached archive are deleted so a subsequent
-``full install --skip-extract-on-hash-match`` re-downloads (MD5-verified
-against the official archive checksum) and re-extracts just those mods.
+Source verification identifies damaged mods for a sparse repair catalogue.
+Broken folders and corrupt archives are quarantined; healthy cached archives
+are reused. The CLI reinstalls selected addons and reapplies shared patches.
 """
 
 from __future__ import annotations
@@ -34,6 +31,24 @@ USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
+
+
+def repair_catalogue(records: dict[str, ModPackRecord]) -> str:
+    """A sparse CLI catalogue, retaining the selected installed folder numbers."""
+    rows = {}
+    for folder, record in records.items():
+        if folder.casefold() != record.folder_name.casefold():
+            raise ValueError(f"Repair requires the catalogue folder name: {folder}")
+        if not 1 <= record.counter <= 100000 or record.counter in rows:
+            raise ValueError("Invalid or duplicate repair catalogue counter")
+        fields = [record.dl_link, record.instructions, record.patch, record.addon_name,
+                  record.mod_db_url, record.zip_name, record.md5_mod_db]
+        if any(any(c in value for c in "\r\n\t") for value in fields):
+            raise ValueError("Invalid repair catalogue field")
+        rows[record.counter] = "\t".join(fields)
+    # The CLI drops blank lines before assigning counters. Non-empty category
+    # placeholders preserve numbering without creating downloadable records.
+    return "\n".join(rows.get(i, "#") for i in range(1, max(rows, default=0) + 1))
 
 
 @dataclass

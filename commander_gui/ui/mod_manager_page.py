@@ -2792,7 +2792,7 @@ class ModManagerPage(QWidget):
             # old profile until it happened to get edited some other way.
             active = self.window.settings.active_profile
             if active is not None and active.mo2_profile != profile:
-                active.mo2_profile = profile
+                active.select_mo2_profile(profile)
                 self.window.settings.save()
                 self.window.refresh_settings()
         else:
@@ -2971,7 +2971,12 @@ class ModManagerPage(QWidget):
         settings = self.window.settings
         changed = False
         for cli_profile in settings.profiles:
-            if cli_profile.gamma == gamma and cli_profile.mo2_profile == old_name:
+            if cli_profile.gamma != gamma:
+                continue
+            if cli_profile.mo2_singleplayer_profile == old_name:
+                cli_profile.mo2_singleplayer_profile = new_name
+                changed = True
+            if cli_profile.mo2_profile == old_name:
                 cli_profile.mo2_profile = new_name
                 changed = True
         if changed:

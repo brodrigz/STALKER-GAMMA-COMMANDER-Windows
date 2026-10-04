@@ -245,6 +245,8 @@ class ProfilesPage(QWidget):
         self.mo2_combo.setEditable(True)
         self.mo2_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.mo2_edit = self.mo2_combo.lineEdit()
+        self.coop_edit = QLineEdit()
+        self.coop_edit.setPlaceholderText(tr("Not created — install xrRazom from Co-op"))
         self.threads_spin = QSpinBox()
         self.threads_spin.setRange(1, 20)
 
@@ -303,6 +305,9 @@ class ProfilesPage(QWidget):
             ),
             self.mo2_combo,
         )
+        self.form.addRow(field("MO2 Co-op profile", self.coop_edit,
+                               "Separate MO2 profile for xrRazom. Leave empty until Co-op setup creates it. "
+                               "An existing choice must contain xrRazom enabled at highest priority."), self.coop_edit)
         self.form.addRow(
             field(
                 "Download threads",
@@ -436,7 +441,8 @@ class ProfilesPage(QWidget):
         self.anomaly_edit.setText(profile.anomaly)
         self.gamma_edit.setText(profile.gamma)
         self.cache_edit.setText(profile.cache)
-        self.mo2_edit.setText(profile.mo2_profile)
+        self.mo2_edit.setText(profile.singleplayer_profile)
+        self.coop_edit.setText(profile.mo2_coop_profile)
         self._refresh_mo2_profiles()
         self.threads_spin.setValue(profile.download_threads)
         self.modpack_edit.setText(profile.mod_pack_maker_url)
@@ -471,6 +477,13 @@ class ProfilesPage(QWidget):
         profile.gamma = normalize_path(self.gamma_edit.text())
         profile.cache = normalize_path(self.cache_edit.text())
         profile.mo2_profile = self.mo2_edit.text().strip() or "G.A.M.M.A"
+        profile.mo2_singleplayer_profile = profile.mo2_profile
+        profile.mo2_coop_profile = self.coop_edit.text().strip()
+        existing = next((p for p in self.settings.profiles if p.profile_name == self._form_state), None)
+        if (existing and existing.mo2_coop_profile and existing.mo2_profile == existing.mo2_coop_profile
+                and existing.gamma == profile.gamma and existing.anomaly == profile.anomaly):
+            # Editing configuration does not switch the live engine/profile pair.
+            profile.mo2_profile = existing.mo2_profile
         profile.download_threads = self.threads_spin.value()
         profile.mod_pack_maker_url = (
             self.modpack_edit.text().strip() or profile.mod_pack_maker_url
@@ -526,7 +539,7 @@ class ProfilesPage(QWidget):
         self.export_button.setEnabled(not busy and self.profile_list.count() > 0)
         for edit in (
             self.name_edit, self.anomaly_edit, self.gamma_edit, self.cache_edit,
-            self.mo2_edit, self.threads_spin, self.modpack_edit, self.modlist_edit,
+            self.mo2_edit, self.coop_edit, self.threads_spin, self.modpack_edit, self.modlist_edit,
             self.gs_url, self.gs_branch, self.sg_url, self.sg_branch,
             self.glf_url, self.glf_branch, self.tg_url, self.tg_branch,
         ):
@@ -672,6 +685,11 @@ class ProfilesPage(QWidget):
                 self, tr("Create Failed"), tr("The CLI did not create the profile.")
             )
             return
+        for created in self.window.settings.profiles:
+            if created.profile_name == profile.profile_name:
+                created.mo2_singleplayer_profile = profile.singleplayer_profile
+                created.mo2_coop_profile = profile.mo2_coop_profile
+        self.window.settings.save()
         try:
             seed_new_mo2_profile(profile.gamma, profile.mo2_profile)
         except OSError:
@@ -820,7 +838,8 @@ class ProfilesPage(QWidget):
             if answer != QMessageBox.StandardButton.Yes:
                 reset_sources(imported)
         self._new_profile()
-        self.mo2_edit.setText(imported.mo2_profile)
+        self.mo2_edit.setText(imported.singleplayer_profile)
+        self.coop_edit.setText(imported.mo2_coop_profile)
         self.threads_spin.setValue(imported.download_threads)
         self.modpack_edit.setText(imported.mod_pack_maker_url)
         self.modlist_edit.setText(imported.mod_list_url)

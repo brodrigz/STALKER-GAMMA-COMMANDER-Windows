@@ -60,7 +60,7 @@ from ..themes import (
     set_active_theme,
 )
 from ..updates import check_commander_update, check_updates, effective_update_channel
-from .about_page import _DISCORD, AboutPage
+from .about_page import AboutPage
 from .common import (
     OK_GREEN,
     STATUS_GREY,
@@ -77,6 +77,7 @@ from .common import (
     shutdown_active_runners,
     tr,
 )
+from .coop_page import CoopPage
 from .dashboard import DashboardPage
 from .help_page import HelpPage
 from .install_page import InstallPage, _resume_state_matches
@@ -93,6 +94,7 @@ NAV_ITEMS = [
     ("systemcheck", "System Check"),
     ("install", "Install"),
     ("play", "Play"),
+    ("coop", "Co-op"),
     ("update", "Updates"),
     ("modmanager", "Mod Manager"),
     ("profiles", "Profiles"),
@@ -304,6 +306,8 @@ class MainWindow(QMainWindow):
         self._settings_open = False
         self._last_tab_key = "dashboard"
         self._nav_refresh_serial = 0
+        from .coop_update_check import CoopUpdateCheck
+        self.coop_updates = CoopUpdateCheck(self)
 
         # Built before _build_ui(): constructing pages there (e.g. the
         # Dashboard) can trigger refresh_settings() -> _refresh_status_bar()
@@ -319,6 +323,7 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(0)
         QTimer.singleShot(0, self._maybe_check_for_updates_in_background)
         QTimer.singleShot(0, self._check_commander_update_status)
+        QTimer.singleShot(0, self.coop_updates.start_once)
         self._start_update_timer()
         # The Welcome screen (latest patch notes, links), unless "Don't show
         # again" was ticked - here or in Deck Mode, which shares the setting.
@@ -683,6 +688,21 @@ class MainWindow(QMainWindow):
         self._status_info_label.setStyleSheet(_STATUS_LABEL_STYLE)
         self.statusBar().addWidget(self._status_info_label)
 
+        self.active_profile_label = QLabel()
+        self.active_profile_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.active_profile_label.setStyleSheet(_STATUS_LABEL_STYLE)
+        self.active_profile_label.setMaximumWidth(220)
+        self.statusBar().addWidget(self.active_profile_label)
+        self.change_profile_button = QPushButton(tr("Change profile"))
+        self.change_profile_button.setObjectName("tertiary")
+        self.change_profile_button.setStyleSheet("font-size: 12px; padding: 1px 6px; min-height: 0px;")
+        self.change_profile_button.setFixedHeight(21)
+        self.change_profile_button.clicked.connect(lambda: (self.close_settings(), self.set_page("profiles")))
+        self.statusBar().addWidget(self.change_profile_button)
+        self._status_language_label = QLabel()
+        self._status_language_label.setStyleSheet(_STATUS_LABEL_STYLE)
+        self.statusBar().addWidget(self._status_language_label)
+
         self._status_language_combo = NoWheelComboBox()
         self._status_language_combo.setStyleSheet(_STATUS_COMBO_STYLE)
         self._status_language_combo.setFixedHeight(21)
@@ -764,7 +784,7 @@ class MainWindow(QMainWindow):
         self._update_status_button.setFlat(True)
         self._update_status_button.setEnabled(False)
         self._update_status_button.setStyleSheet(
-            f"color: {STATUS_GREY.name()}; border: none;"
+            f"color: {STATUS_GREY.name()}; border: none; font-size: 12px; padding: 1px 4px; min-height: 0px;"
         )
         update_layout.addWidget(self._update_status_button)
 
@@ -776,26 +796,13 @@ class MainWindow(QMainWindow):
         update_separator.setStyleSheet(_STATUS_LABEL_STYLE)
         update_layout.addWidget(update_separator)
 
-        # COMMANDER is up to date | Discord | GitHub - Discord styled
-        # exactly like the GitHub link beside it.
-        discord_link = QPushButton(tr("Discord"))
-        discord_link.setObjectName("discordLink")
-        discord_link.setToolTip(tr("Join the COMMANDER Discord"))
-        discord_link.setFlat(True)
-        discord_link.setCursor(Qt.CursorShape.PointingHandCursor)
-        discord_link.clicked.connect(lambda: open_url(_DISCORD))
-        update_layout.addWidget(discord_link)
-        discord_separator = QLabel("   |   ")
-        discord_separator.setStyleSheet(_STATUS_LABEL_STYLE)
-        update_layout.addWidget(discord_separator)
-
         github_link = QPushButton(tr("GitHub"))
         github_link.setObjectName("githubLink")
-        github_link.setToolTip(tr("Open SSH-Kitty on GitHub"))
+        github_link.setToolTip(tr("Open the Windows fork on GitHub"))
         github_link.setFlat(True)
         github_link.setCursor(Qt.CursorShape.PointingHandCursor)
         github_link.clicked.connect(
-            lambda: open_url("https://github.com/SSH-Kitty/STALKER-GAMMA-COMMANDER")
+            lambda: open_url("https://github.com/brodrigz/STALKER-GAMMA-COMMANDER-Windows")
         )
         update_layout.addWidget(github_link)
 
@@ -1007,9 +1014,12 @@ class MainWindow(QMainWindow):
         tr()-wrapped text needs this explicit refresh to pick up a language
         change instead of getting it "for free" via reconstruction.
         """
+        self._refresh_active_profile()
         self._status_info_label.setText(
-            f"COMMANDER {__version_label__}   |   Active profile: {self._active_name()}   |   {tr('Language:')}"
+            f"COMMANDER {__version_label__}   |   "
         )
+        self._status_language_label.setText(f"  |  {tr('Language:')}")
+        self.change_profile_button.setText(tr("Change profile"))
         self._status_theme_label.setText(f"   |   {tr('Theme:')}")
         lang_index = self._status_language_combo.findData(active_language())
         self._status_language_combo.blockSignals(True)
@@ -1055,6 +1065,7 @@ class MainWindow(QMainWindow):
     #: (see ``_schedule_page_refresh``) by defining the matching method, not
     #: by main_window.py special-casing its key.
     _PAGE_CLASSES: ClassVar[dict[str, type[QWidget]]] = {
+        "coop": CoopPage,
         "play": PlayPage,
         "dashboard": DashboardPage,
         "install": InstallPage,
@@ -1300,6 +1311,7 @@ class MainWindow(QMainWindow):
         # touch a widget that is about to be destroyed. install_busy being
         # False (checked by the caller) means nothing CLI-driving is
         # running, so this only ever cancels quick, safe-to-abandon lookups.
+        self.coop_updates.before_ui_rebuild()
         shutdown_active_runners(timeout_ms=2000)
 
         old_central = self.takeCentralWidget()
@@ -1381,6 +1393,19 @@ class MainWindow(QMainWindow):
         )
         event.accept()
 
+    def _refresh_active_profile(self) -> None:
+        if not hasattr(self, "active_profile_label"):
+            return
+        profile = self.settings.active_profile
+        if profile is None:
+            self.active_profile_label.setText(tr("No active profile"))
+            self.active_profile_label.setToolTip("")
+            return
+        self.active_profile_label.setText(tr(
+            "MO2: {mo2}", mo2=profile.mo2_profile or "(none)",
+        ))
+        self.active_profile_label.setToolTip(f"Active MO2 profile: {profile.mo2_profile}\nCommander profile: {profile.profile_name}\nGAMMA: {profile.gamma}\nAnomaly: {profile.anomaly}")
+
     def update_mod_counter(self) -> None:
         """Refresh the topbar's always-visible active/total mod count.
 
@@ -1389,6 +1414,7 @@ class MainWindow(QMainWindow):
         so the topbar layout doesn't shift and the counter reads as a
         permanent fixture next to the settings cog.
         """
+        self._refresh_active_profile()
         profile = self.settings.active_profile
         counts = (
             count_active_mods(profile.gamma, profile.mo2_profile)
@@ -1413,7 +1439,7 @@ class MainWindow(QMainWindow):
                 "{enabled} of {total} mods enabled in profile “{profile_name}”",
                 enabled=enabled,
                 total=total,
-                profile_name=profile.profile_name,
+                profile_name=profile.mo2_profile,
             )
             if incomplete:
                 tooltip += "\n" + tr(

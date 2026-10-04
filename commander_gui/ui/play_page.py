@@ -372,6 +372,19 @@ class PlayPage(QWidget):
         )
         root.addWidget(self.launch_live_status)
 
+        self.launch_notice = info_label("")
+        self.launch_notice.setStyleSheet(f"color: {WARN.name()};")
+        self.launch_notice.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.launch_notice.hide()
+        root.addWidget(self.launch_notice)
+
+        self.coop_warning = info_label("")
+        self.coop_warning.setStyleSheet(f"color: {WARN.name()};")
+        self.coop_warning.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.coop_warning.setTextFormat(Qt.TextFormat.PlainText)
+        self.coop_warning.hide()
+        root.addWidget(self.coop_warning)
+
         secondary_row = QHBoxLayout()
         secondary_row.setSpacing(12)
         self.open_mo2_button = QPushButton(tr("Open MO2"))
@@ -866,12 +879,23 @@ class PlayPage(QWidget):
                 runner.wrapper.insert(0, gamemoderun)
         return runner
 
-    def _resolve_command(self, *, open_mo2: bool, direct: bool, runner=None):
+    def _resolve_command(self, *, open_mo2: bool, direct: bool, runner=None, verify_files=True):
         import re
 
         profile = self.window.settings.active_profile
         if profile is None:
             raise LaunchError("No active profile. Configure a profile first.")
+        from ..coop import CoopError, CoopManager
+        try:
+            CoopManager(profile).assert_launch(
+                direct=direct,
+                binary=None if open_mo2 else next(
+                    (e.binary for e in self.executables if e.title == self._selected_target()), None
+                ),
+                verify_files=verify_files,
+            )
+        except CoopError as exc:
+            raise LaunchError(str(exc)) from exc
         if runner is None:
             runner = self._runner()
         if direct:
@@ -927,6 +951,7 @@ class PlayPage(QWidget):
         it is now reported in the preview pane instead.
         """
         try:
+            self.launch_button.setToolTip("")
             self._refresh_preview_inner()
         except Exception as exc:  # noqa: BLE001 - never leave buttons silently dead
             self.preview_label.setPlainText(f"Launch check failed: {exc}")
@@ -935,6 +960,29 @@ class PlayPage(QWidget):
                 self.launch_button.setEnabled(False)
             self.open_mo2_button.setEnabled(False)
             self.direct_button.setEnabled(False)
+        finally:
+            reason = ""
+            if not self._launching and not self.launch_button.isEnabled():
+                reason = self.launch_button.toolTip() or self.preview_label.toPlainText()
+            self.launch_notice.setText(reason)
+            self.launch_notice.setVisible(bool(reason))
+            self._refresh_coop_warning()
+
+    def _refresh_coop_warning(self):
+        from ..coop import CoopError, CoopManager
+
+        message = ""
+        profile = self.window.settings.active_profile
+        if profile is not None:
+            try:
+                state = CoopManager(profile).state()
+                if state.get("installed") and state.get("active"):
+                    message = ("Co-op binaries are active. Launching uses the xrRazom engine. "
+                               "For single-player, select Switch to single-player in the Co-op tab.")
+            except (OSError, ValueError, CoopError):
+                message = "Could not determine the co-op engine state. Check the Co-op tab before launching."
+        self.coop_warning.setText(message)
+        self.coop_warning.setVisible(bool(message))
 
     def _refresh_preview_inner(self) -> None:
         # Resolve the runner once: each resolution probes the filesystem for
@@ -957,33 +1005,38 @@ class PlayPage(QWidget):
             return
         # Try MO2 path first.
         mo2_ok = False
+        mo2_error = "No launch target available"
         command = None
         try:
             command, _, _ = self._resolve_command(
-                open_mo2=False, direct=False, runner=runner
+                open_mo2=False, direct=False, runner=runner, verify_files=False
             )
             mo2_ok = True
-        except LaunchError:
-            pass
+        except LaunchError as exc:
+            mo2_error = str(exc)
         # Try direct path as fallback.
         direct_ok = False
+        direct_error = "No launch target available"
         try:
             dcommand, _, _ = self._resolve_command(
-                open_mo2=False, direct=True, runner=runner
+                open_mo2=False, direct=True, runner=runner, verify_files=False
             )
             direct_ok = True
             if command is None:
                 command = dcommand
-        except LaunchError:
-            pass
+        except LaunchError as exc:
+            direct_error = str(exc)
         if command is None:
-            self.preview_label.setPlainText("No launch target available")
+            self.preview_label.setPlainText(mo2_error)
             self.preview_label.setStyleSheet(f"color: {WARN.name()};")
             self.target_path.setText("")
             if not self._launching:
                 self.launch_button.setEnabled(False)
             self.open_mo2_button.setEnabled(False)
             self.direct_button.setEnabled(False)
+            self.launch_button.setToolTip(mo2_error)
+            self.open_mo2_button.setToolTip(mo2_error)
+            self.direct_button.setToolTip(direct_error)
             self._build_chips(ok=False, runner=None)
             return
         if os.name == "nt":
@@ -993,23 +1046,11 @@ class PlayPage(QWidget):
         else:
             self.preview_label.setPlainText(shlex.join(command))
         self.preview_label.setStyleSheet("")
-        # Anomaly-direct availability is independent of the MO2/target
-        # pipeline: with only Anomaly installed, Launch Anomaly must work.
-        anomaly_fallback = next(
-            (
-                e
-                for e in self.executables
-                if e.title == "Anomaly" and e.binary and Path(e.binary).is_file()
-            ),
-            None,
-        )
         base_ok = not self._launching and not self._install_busy and not incomplete
         if not self._launching:
             self.launch_button.setEnabled(base_ok and mo2_ok)
         self.open_mo2_button.setEnabled(base_ok and mo2_ok)
-        self.direct_button.setEnabled(
-            base_ok and (mo2_ok or direct_ok or anomaly_fallback is not None)
-        )
+        self.direct_button.setEnabled(base_ok and direct_ok)
         if mo2_ok:
             self.launch_button.setToolTip("")
             self.open_mo2_button.setToolTip("")
@@ -1021,11 +1062,13 @@ class PlayPage(QWidget):
             self.launch_button.setToolTip(tip)
             self.open_mo2_button.setToolTip(tip)
         else:
-            self.launch_button.setToolTip("")
-            self.open_mo2_button.setToolTip("")
+            self.launch_button.setToolTip(mo2_error)
+            self.open_mo2_button.setToolTip(mo2_error)
         self.direct_button.setToolTip(
-            "" if self.direct_button.isEnabled() else "No launch target available"
+            "" if self.direct_button.isEnabled() else direct_error
         )
+        if self._install_busy:
+            self.launch_button.setToolTip("Wait for the current installation or maintenance operation to finish.")
         if incomplete:
             tip = tr(
                 "The last GAMMA install attempt failed - resume it on the Install page before playing."
@@ -1229,10 +1272,15 @@ class PlayPage(QWidget):
         # Try MO2 first; fall back to direct launch if MO2 is unavailable.
         try:
             runner = self._runner()
-            self._resolve_command(open_mo2=False, direct=False, runner=runner)
+            self._resolve_command(open_mo2=False, direct=False, runner=runner, verify_files=False)
             self._run(open_mo2=False, direct=False, runner=runner)
         except LaunchError as exc:
             self._set_launch_button_state(False)
+            from ..coop import CoopManager
+            active_profile = self.window.settings.active_profile
+            if active_profile is not None and CoopManager(active_profile).state().get("active", False):
+                QMessageBox.warning(self, "Could not launch co-op", str(exc))
+                return
             answer = QMessageBox.question(
                 self,
                 tr("MO2 launch unavailable"),

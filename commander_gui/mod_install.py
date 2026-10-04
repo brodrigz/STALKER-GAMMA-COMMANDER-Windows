@@ -85,6 +85,7 @@ def _list_archive_paths(archiver: Path, archive: Path) -> list[str]:
             errors="replace",
             timeout=30,
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ModInstallError(f"Could not list archive contents: {exc}") from exc
@@ -181,6 +182,7 @@ def extract_archive(
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, ValueError) as exc:
         raise ModInstallError(f"Could not start archive extractor: {exc}") from exc
@@ -297,6 +299,7 @@ def _unwrap_tarball(
             errors="replace",
             timeout=3600,
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ModInstallError(f"Could not unpack the inner tar archive: {exc}") from exc

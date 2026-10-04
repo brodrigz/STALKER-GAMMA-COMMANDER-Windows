@@ -1,13 +1,34 @@
 ## What this fork adds
 
+- Managed xrRazom co-op: verified Slim download, a separate MO2 profile, reversible engine switching, update recovery and repair. Session settings, friend comparison and adoption are hidden pending validation.
 - Full Windows support, including portable package.
 - Support for existing GAMMA installations and MO2 profiles through our [custom CLI](https://github.com/brodrigz/stalker-gamma-cli).
 - Replaces obsolete modpack API URLs with the official GitHub catalogue while preserving custom sources.
 - Per-addon download progress and speed, pause/resume, and resizable panels.
+- Independent download and extraction slots, retries during the batch, and explicit waiting/failure states.
+- Publisher-based archive and installed-file verification, with a separate Local MD5 Check for personal snapshots. Repairs target damaged addons, reuse healthy archives and verified source hashes, and recheck repaired files and shared patches.
 - Cloudflare status and browser verification on demand, with resumable downloads.
 - Persistent Windows tray: minimize or close keeps downloads running; right-click the tray icon and choose Exit to quit. Notifications report completed installs/updates and required Cloudflare verification, with a persistent in-app warning.
 
 Windows is the supported target; Linux compatibility is not maintained.
+
+## Build a portable Windows package
+
+Run `./package.ps1` in PowerShell. It builds the current launcher source, including uncommitted changes, with the CLI revision pinned in `cli/windows-backend.json`, runs smoke checks before and after ZIP extraction, and writes the portable ZIP and SHA-256 checksum to a new `dist/releases/portable-<timestamp>/` folder. The full ZIP path is printed when finished. Use `./package.ps1 -OutputDirectory C:\Builds\Commander` for a custom destination.
+
+First-time build setup: install Python 3.10 x64, run `./scripts/Setup-Windows.ps1`, then `.venv/Scripts/python.exe -m pip install -r requirements-build-windows.txt`. CLI changes must be committed and the pinned revision updated to include them in a package. This command builds locally; it does not publish a release.
+
+## GAMMA co-op (xrRazom)
+
+Open **Co-op** with your normal GAMMA profile selected, then choose **Download and install Slim 1.4** or select the official Slim ZIP. Commander prompts for a separate MO2 Co-op profile name (default `G.A.M.M.A. Co-op`), verifies the publisher MD5, copies your single-player mod selection and order, and enables xrRazom at highest priority. The current MO2 Anomaly plugin shares saves between profiles; use distinct single-player and co-op save names. Adopting an existing co-op profile is temporarily disabled; a manually installed co-op engine must first be restored to the GAMMA engine so a valid single-player backup can be made.
+
+Commander profiles have separate **MO2 profile** and **MO2 Co-op profile** settings. New installations leave the Co-op profile unset until setup. The startup update check runs once per app session; manual checks remain available. Installation controls are hidden after setup, and Remove co-op requires confirmation.
+
+Choose **Activate co-op**, then **Play co-op**. The button requires the co-op engine to be active and the configured Co-op profile to exist with xrRazom enabled at highest priority; it uses the normal MO2 launch flow. The Play tab also warns whenever co-op binaries are active. Set your player name, role and connection in-game under Settings > xrRazom Co-op. Launcher session controls are hidden; their code is retained as comments until validated. Keep your name unchanged to retain your identity on the host. Steam must be running for Steam sessions (everyone needs Call of Pripyat), and closed for LAN sessions. Use **Switch to single-player** to restore the backed-up engine and original profile. Close Anomaly and MO2 before changing modes. The bottom status bar shows the active MO2 profile and provides Change profile; its tooltip identifies the Commander configuration profile.
+
+Commander temporarily restores the GAMMA engine during its updates/repairs, refreshes the single-player backups afterward and reapplies co-op. Failed maintenance blocks launch until a successful retry. Use **Recover interrupted setup** after an interrupted co-op transaction, or **Repair co-op** to restore managed files from the verified package. **Remove co-op** keeps the co-op profile and saves. Backups and the retained package are stored under the Commander's CLI settings directory in `coop/`, outside the GAMMA installation. After an external launcher update, run a GAMMA update/repair through Commander to refresh its engine backups before reapplying co-op.
+
+**Verify Integrity** checks managed co-op payload against the authenticated package, including intentional Anomaly engine replacements. **Play with the same mods** is hidden pending validation; use the game's connection check to identify mismatches. **Read connection mismatches** shows `xrRazom cfg-diff` entries from the newest game log. This integration pins Slim 1.4; it does not install Full Bundle options or disable the game's mod compatibility check.
 
 ---
 <div align="center">
@@ -99,7 +120,9 @@ Direct, careful editing of the active MO2 profile's `modlist.txt` — search, en
 - Press **Ctrl+F** anywhere in the app to jump straight to this page's search box.
 
 ### Verify Integrity & Repair
-Runs three passes: an Anomaly file check, a GAMMA presence check (every enabled mod must exist on disk), and a full MD5 scan of every file under `gamma/mods` against a saved baseline. Anything missing, corrupted or changed is reported.
+Checks Anomaly files and mod presence, retrieves ModDB archive hashes, and compares installed files against verified archives and the configured GitHub sources, applying GAMMA patch precedence. Requires internet access and retained ModDB archives; missing references, rate limits, or unsupported sources produce an incomplete result, never a clean verdict. User settings and extra files are excluded. Differences can mean edits or newer source versions as well as corruption. Local verification uses up to three workers (bounded by the profile�s download-thread setting), while ModDB metadata requests stay paced. Shared archives are checked and extracted once per scan.
+
+**Local MD5 Check** is a separate pane for creating/checking a personal snapshot. Its first run records existing files and cannot detect pre-existing corruption. Source verification never creates or refreshes that snapshot.
 
 If a broken mod matches an entry in the official GAMMA mod list, COMMANDER can **repair it automatically and non-destructively**: the mod folder and its cached archive are set aside (not deleted), then it's redownloaded and MD5-verified against the official checksum. If the reinstall fails or is cancelled, the set-aside copies are restored automatically — nothing is permanently lost until a repair is confirmed successful. Your own added mods and files are never touched, and anything with no known download source is reported instead of touched.
 

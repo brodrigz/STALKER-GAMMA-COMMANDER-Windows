@@ -38,6 +38,9 @@ class CliProfile:
     gamma: str = "gamma/gamma"
     cache: str = "gamma/cache"
     mo2_profile: str = "G.A.M.M.A"
+    # MO2 selection above remains the CLI-compatible active selection.
+    mo2_singleplayer_profile: str = ""
+    mo2_coop_profile: str = ""
     download_threads: int = 6
     mod_pack_maker_url: str = DEFAULT_MOD_PACK_MAKER_URL
     mod_list_url: str = DEFAULT_MOD_LIST_URL
@@ -76,6 +79,15 @@ class CliProfile:
         "teivaz_anomaly_gunslinger_repo_url": "TeivazAnomalyGunslingerRepoUrl",
         "teivaz_anomaly_gunslinger_repo_branch": "TeivazAnomalyGunslingerRepoBranch",
     }
+
+    @property
+    def singleplayer_profile(self) -> str:
+        return self.mo2_singleplayer_profile or self.mo2_profile
+
+    def select_mo2_profile(self, name: str) -> None:
+        if name != self.mo2_coop_profile:
+            self.mo2_singleplayer_profile = name
+        self.mo2_profile = name
 
     def to_dict(self) -> dict:
         out = dict(self.extra)
@@ -147,6 +159,10 @@ class CliSettings:
         data = dict(self.extra)
         data["Profiles"] = [p.to_dict() for p in self.profiles]
         write_text(path, json.dumps(data, indent=2) + "\n")
+        modes = {p.profile_name: {"gamma": p.gamma, "anomaly": p.anomaly,
+                                 "singleplayer": p.singleplayer_profile, "coop": p.mo2_coop_profile}
+                 for p in self.profiles}
+        write_text(path.with_name("commander-profile-modes.json"), json.dumps(modes, indent=2) + "\n")
 
 
 def _corrupt_backup_path(path: Path) -> Path:
@@ -202,9 +218,31 @@ def load_settings(path: Path | None = None) -> CliSettings:
         default = CliProfile(active=True)
         settings.profiles = [default]
         settings.save(path)
+    try:
+        modes = json.loads(path.with_name("commander-profile-modes.json").read_text(encoding="utf-8"))
+        if not isinstance(modes, dict):
+            modes = {}
+    except (OSError, ValueError):
+        modes = {}
     replacements = []
     for profile in settings.profiles:
-        detected = resolve_mo2_profile(profile.gamma, profile.mo2_profile)
+        saved = modes.get(profile.profile_name)
+        if isinstance(saved, dict) and saved.get("gamma") == profile.gamma and saved.get("anomaly") == profile.anomaly:
+            for attribute, key in (("mo2_singleplayer_profile", "singleplayer"), ("mo2_coop_profile", "coop")):
+                if isinstance(saved.get(key), str):
+                    setattr(profile, attribute, saved[key])
+        else:
+            # Migrate only old managed installations; an explicitly blank new setting stays blank.
+            from .coop import PROFILE, CoopError, CoopManager
+            try:
+                state = CoopManager(profile).state()
+                if state.get("source_profile"):
+                    profile.mo2_singleplayer_profile = state["source_profile"]
+                    profile.mo2_coop_profile = state.get("coop_profile", PROFILE)
+            except (OSError, ValueError, CoopError):
+                pass
+        detected = (profile.mo2_profile if profile.mo2_profile == profile.mo2_coop_profile else
+                    resolve_mo2_profile(profile.gamma, profile.mo2_profile))
         if detected != profile.mo2_profile:
             replacements.append((profile, "mo2_profile", profile.mo2_profile))
             profile.mo2_profile = detected

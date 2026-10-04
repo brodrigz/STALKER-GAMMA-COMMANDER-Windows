@@ -5,8 +5,10 @@ winetricks and verify (bottom).
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import tempfile
 import threading
 from pathlib import Path
 
@@ -41,18 +43,17 @@ from ..integrity import (
     is_expected_gamma_overlay_corrupt,
     restore_gamma_overlay,
     reverted_gamma_overlay,
-    scan_mods_md5,
-    verify_cache_archives,
     verify_gamma,
 )
 from ..launcher import LaunchError
+from ..moddb_session import ACCESS_PREFIX, ModDbSession
 from ..modlist import modlist_path_for
 from ..parsers import ProgressEvent, parse_progress_line, strip_ansi
 from ..repair import (
     classify_problems,
     fetch_modpack_records,
-    purge_quarantine,
     quarantine_mod_and_archive,
+    repair_catalogue,
     repair_preview,
     restore_from_quarantine,
     restore_modlist_after_repair,
@@ -60,6 +61,7 @@ from ..repair import (
     snapshot_modlist,
 )
 from ..settings import cli_ok
+from ..source_integrity import VerificationReferences, verify_sources
 from ..winetricks import (
     WINETRICKS_VERBS,
     check_winetricks_full_status,
@@ -93,6 +95,7 @@ from .common import (
     update_cache_label,
     winetricks_tooltip,
 )
+from .local_md5 import LocalMd5Pane
 
 #: tr() msgid shared between the Install button's own label and the failure
 #: popup's resume hint, so the two can't drift apart if this ever gets renamed.
@@ -260,7 +263,7 @@ def _gamma_verify_gate(gamma_installed_flag: bool) -> str | None:
     return None if gamma_installed_flag else _GAMMA_NOT_INSTALLED
 
 
-def _repair_install_args() -> list[str]:
+def _repair_install_args(catalogue_path: str) -> list[str]:
     """Argv for the post-scan repair reinstall.
 
     Preservation flags are mandatory here: repairs must never touch
@@ -268,7 +271,8 @@ def _repair_install_args() -> list[str]:
     """
     return [
         "full-install",
-        "--skip-extract-on-hash-match",
+        "--repair-only",
+        "--mod-pack-maker-path", catalogue_path,
         "--preserve-user-settings",
         "--preserve-mcm-settings",
     ]
@@ -482,6 +486,11 @@ class InstallPage(QWidget):
         self._checked_archives: set[str] = set()
         self._verify_runner = None
         self._verify_task = None
+        self._source_scan = None
+        self._source_references = VerificationReferences()
+        self._source_records = {}
+        self._repair_workspace = None
+        self._repaired_folders = set()
         self._verify_counts = {"OK": 0, "CORRUPT": 0, "NOT FOUND": 0}
         self._anomaly_problem_lines: list[str] = []
         self._verify_anomaly_ok = False
@@ -749,7 +758,7 @@ class InstallPage(QWidget):
         v_layout.addWidget(section_label(tr("Verify Integrity"), level=2))
         v_layout.addWidget(
             info_label(
-                tr("<span style='color:{arg};'>Step 5.</span> (Optional) Verify your game files by running an MD5 check across Anomaly and GAMMA. This will repair any missing/corrupted mods by redownloading and repairing.", arg=ACCENT.name())
+                tr("Verify downloaded archives against ModDB hashes and installed files against source archives and GAMMA patches. Internet access and retained archives are required. Review differences before choosing repair.")
             )
         )
         self.verify_maintenance_label = QLabel(
@@ -767,6 +776,12 @@ class InstallPage(QWidget):
         self.verify_progress = ProgressArea(show_table=False, show_log=True, log_max_height=180)
         self.verify_progress.cancel_button.clicked.connect(self._cancel_verify)
         v_layout.addWidget(self.verify_progress)
+        self._source_session = None
+        self.verify_progress.moddb_access._verify = self._approve_source_verification
+        local_card, local_layout = make_card()
+        self.local_md5 = LocalMd5Pane(window, self)
+        local_layout.addWidget(self.local_md5)
+        root.addWidget(local_card)
         self.refresh()
 
     def enable_winetricks_status(self):
@@ -822,6 +837,7 @@ class InstallPage(QWidget):
 
     def _update_button_states(self):
         busy = self.window.install_busy
+        self.local_md5.refresh()
         self.root_card_edit.setEnabled(not busy)
         self.root_card_browse.setEnabled(not busy)
         self.create_folders_button.setEnabled(not busy)
@@ -1701,6 +1717,11 @@ class InstallPage(QWidget):
                 tr("Create or activate a profile first (Profiles page)."),
             )
             return
+        self._source_scan = None
+        self._source_references = VerificationReferences()
+        self._source_records = {}
+        self._repair_workspace = None
+        self._repaired_folders = set()
         self._verify_counts = {"OK": 0, "CORRUPT": 0, "NOT FOUND": 0}
         self._anomaly_problem_lines: list[str] = []
         self._verify_anomaly_ok = False
@@ -1732,18 +1753,30 @@ class InstallPage(QWidget):
         runner.finished.connect(self._on_anomaly_verify_finished)
         runner.cancelled.connect(self._on_verify_cancelled)
         self._verify_runner = runner
+        self.verify_progress.set_runner(runner)
+        self.verify_progress.moddb_access.reset()
+        self.verify_progress.moddb_access.start()
         runner.start()
 
     def _on_verify_line(self, line):
         profile = self.window.settings.active_profile
         anomaly_path = profile.anomaly if profile is not None else ""
-        if is_expected_gamma_overlay_corrupt(line, anomaly_path):
+        coop_files = set()
+        if profile is not None and "CORRUPT" in line:
+            from ..coop import CoopError, CoopManager
+            try:
+                state = CoopManager(profile).state()
+                if state.get("installed") and state.get("active"):
+                    coop_files = {key[5:].lower() for key in state["payload"] if key.startswith("game/")}
+            except (OSError, ValueError, CoopError):
+                pass  # Source verification reports unavailable co-op references.
+        if is_expected_gamma_overlay_corrupt(line, anomaly_path, extra_files=coop_files):
             # GAMMA deliberately overwrites this exact file - it will
             # always mismatch anomaly check's vanilla-only baseline, and
             # is not a real problem. Relabel rather than hide the line
             # outright, so the report stays transparent about why.
             line = re.sub(
-                r"\|\s*CORRUPT\s*$", "| OK (GAMMA-modified, expected)", line
+                r"\|\s*CORRUPT\s*$", "| SKIPPED (requires GAMMA/co-op source verification)" if coop_files else "| SKIPPED (requires GAMMA source verification)", line
             )
             status = "OK"
         else:
@@ -1805,6 +1838,12 @@ class InstallPage(QWidget):
 
     def _start_gamma_verify(self):
         self._scan_cancel = threading.Event()
+        self._source_references = VerificationReferences()
+        self._source_records = {}
+        self._repaired_folders = set()
+        self.verify_progress.set_runner(None)
+        self.verify_progress.moddb_access.reset()
+        self.verify_progress.moddb_access.start()
         self.verify_progress.cancel_button.show()
         self.verify_progress.status_message("Checking GAMMA mods...")
         self.verify_progress.log.append_line("")
@@ -1829,7 +1868,7 @@ class InstallPage(QWidget):
         official_missing = official is None or len(official) == 0
         if official_missing:
             report(
-                "Official mod list unavailable - verification will be "
+                "Official mod list unavailable - mod membership checks will be "
                 "presence-based only."
             )
         presence = verify_gamma(
@@ -1842,56 +1881,46 @@ class InstallPage(QWidget):
             ),
             official_mods=official,
         )
-        report("Starting full MD5 scan of mod files...")
-        scan = scan_mods_md5(
-            profile.gamma,
-            on_progress=(
-                lambda done, total, size: report(
-                    f"MD5 hashing {done}/{total} files ({size})"
-                )
-            ),
-            cancel=self._scan_cancel,
-        )
-        plan = None
-        report("Checking GAMMA download cache...")
+        report("Reading the configured mod catalogue...")
         records = fetch_modpack_records(profile.mod_pack_maker_url)
-        expected: dict[str, str] = {}
-        for record in records.values():
-            digest = record.md5_mod_db.lower()
-            if len(digest) != 32 or any(char not in "0123456789abcdef" for char in digest):
-                continue
-            for archive_name in record.archive_names():
-                expected.setdefault(archive_name, digest)
-        cache_result = (
-            verify_cache_archives(
-                profile.cache,
-                expected,
-                on_progress=lambda done, total, name: report(
-                    f"Checking cached archive {done}/{total}: {name}"
-                ),
-                cancel=self._scan_cancel,
-            )
-            if expected
-            else None
-        )
-        # Presence-check misses (a mod missing/empty right now) are real,
-        # classifiable problems even on the very first baseline run (no
-        # content comparison has happened yet, so scan.problems is always
-        # 0 then) or when the missing mod's files were simply never in
-        # the baseline to begin with - without folding these in, such a
-        # mod would be reported forever but never actually offered for
-        # repair (see classify_problems' extra_broken_folders docstring).
-        extra_broken = presence.missing + presence.empty
+        scan = self._scan_sources(profile, records, report)
+        plan = None
+        cache_result = None
+        # Source comparison visits installed folders. Include missing/empty
+        # enabled mods from the presence pass in the repair plan as well.
+        extra_broken = presence.missing + presence.empty + scan.archive_bad_mods
         if not scan.cancelled and (scan.problems or extra_broken):
             report("Looking up download sources for broken mods...")
             plan = classify_problems(scan, records, extra_broken_folders=extra_broken)
         return (presence, scan, plan, records, official_missing, cache_result)
 
+    def _approve_source_verification(self):
+        if self._source_session is not None:
+            return self._source_session.approve_verification()
+        runner = self._verify_runner
+        return runner.verify_moddb() if runner is not None else False
+
+    def _scan_sources(self, profile, records, report):
+        session = ModDbSession(
+            notify=report,
+            access_changed=lambda state: report(ACCESS_PREFIX + json.dumps(state)),
+        )
+        self._source_session = session
+        try:
+            return verify_sources(profile, records, session, self._scan_cancel, report,
+                                  references=self._source_references,
+                                  repair_folders=self._repaired_folders)
+        finally:
+            session.stop()
+            self._source_session = None
+
     def _on_gamma_verify_progress(self, text):
+        if self.verify_progress.moddb_access.consume_line(text):
+            return
         self.verify_progress.status_message(text)
         for pattern, start, end in (
             (re.compile(r"Checking GAMMA mod (\d+)/(\d+)"), *_VERIFY_PHASE["presence"]),
-            (re.compile(r"MD5 hashing (\d+)/(\d+)"), *_VERIFY_PHASE["md5"]),
+            (re.compile(r"Source hashing (\d+)/(\d+)"), *_VERIFY_PHASE["md5"]),
         ):
             match = pattern.search(text)
             if match:
@@ -1906,7 +1935,7 @@ class InstallPage(QWidget):
             presence_or_sentinel,
             scan,
             plan,
-            _records,
+            records,
             official_missing,
             cache_result,
         ) = result
@@ -1929,7 +1958,10 @@ class InstallPage(QWidget):
                 return
             self._conclude_after_repairs()
             return
+        self.verify_progress.moddb_access.finish()
+        self._source_records = records
         presence = presence_or_sentinel
+        self._source_scan = scan
         self._presence = presence
         self._repair_plan = plan
         # matched_records (not the raw records dict) so a folder matched via
@@ -1946,7 +1978,7 @@ class InstallPage(QWidget):
                 self.verify_progress.log.append_line(line)
         if official_missing:
             self.verify_progress.log.append_line(
-                "Note: official mod list unavailable - GAMMA results are "
+                "Note: official mod list unavailable - mod membership checks are "
                 "presence-based only."
             )
         counts = self._verify_counts
@@ -1955,7 +1987,7 @@ class InstallPage(QWidget):
         if scan.cancelled:
             self._finish_verify(
                 ok=False,
-                message="Verify cancelled during the GAMMA MD5 scan.",
+                message="Verify cancelled during the source check.",
                 summary="Verify cancelled",
             )
             return
@@ -1966,29 +1998,15 @@ class InstallPage(QWidget):
                 summary="Verify cancelled",
             )
             return
-        # A cached archive not matching the *current live* modpack list is
-        # normal, expected staleness (the same condition Utilities' own
-        # cache-cleanup preflight calls "needs a redownload," not
-        # corruption) - it must never by itself flip the pass/fail verdict
-        # or trigger a repair prompt. It is still shown in the log above.
         all_clean = (
             anomaly_ok
             and counts["NOT FOUND"] == 0
             and presence_ok
             and scan.problems == 0
+            and scan.complete
+            and not official_missing
         )
         if all_clean:
-            if scan.created:
-                self._finish_verify(
-                    ok=True,
-                    message=(
-                        "MD5 baseline created. Run Verify Integrity again "
-                        "to detect changes."
-                    ),
-                    summary=scan.summary,
-                    baseline_created=True,
-                )
-                return
             self._finish_verify(
                 ok=True,
                 message=self._gamma_ok_message(repaired=0),
@@ -2026,9 +2044,9 @@ class InstallPage(QWidget):
             sections.append(
                 "GAMMA: broken mod(s):\n"
                 + shown
-                + "\nRepairing sets each broken mod folder and cached "
-                "archive aside (not deleted), then re-downloads and "
-                "re-installs it (MD5-verified). If the reinstall fails or "
+                + "\nRepairing sets broken mod folders and corrupt archives "
+                "aside, reuses healthy cached archives and reinstalls only "
+                "the selected mods, then reapplies shared GAMMA patches. If repair fails or "
                 "is cancelled, the set-aside copies are restored "
                 "automatically - nothing is lost. Extra mods and your own "
                 "added files are never touched."
@@ -2130,6 +2148,9 @@ class InstallPage(QWidget):
         )
         self._verify_runner = runner
         self.verify_progress.set_runner(runner)
+        self.verify_progress.moddb_access.reset()
+        self.verify_progress.moddb_access.start()
+        self.verify_progress.set_runner(runner)
         runner.start()
 
     def _on_anomaly_repair_finished(self, rc, output):
@@ -2155,6 +2176,9 @@ class InstallPage(QWidget):
             lambda: self._on_verify_cancelled("Anomaly re-check")
         )
         self._verify_runner = runner
+        self.verify_progress.set_runner(runner)
+        self.verify_progress.moddb_access.reset()
+        self.verify_progress.moddb_access.start()
         runner.start()
 
     def _on_anomaly_recheck_finished(self, rc, output):
@@ -2213,7 +2237,7 @@ class InstallPage(QWidget):
                 f"no download source found: {shown}"
             )
         else:
-            lines.append("GAMMA: verified - no issues found")
+            lines.append("GAMMA: source checks finished; see coverage and differences below")
         if self._official_missing:
             lines.append("Note: official mod list was unavailable.")
         if self._cache_archive_result is not None:
@@ -2258,7 +2282,11 @@ class InstallPage(QWidget):
             and (remaining in (None, 0))
             and unrepairable_count == 0
             and not reverted
+            and (self._gamma_skipped or (self._source_scan is not None and self._source_scan.complete and self._source_scan.problems == 0))
+            and not self._official_missing
         )
+        if self._source_scan is not None:
+            lines.append(self._source_scan.summary)
         message = "\n".join(lines)
         summary = "Verify & Repair complete" if ok_final else "Issues remain"
         dialog_lines = "\n".join(f"• {line}" for line in lines)
@@ -2268,7 +2296,7 @@ class InstallPage(QWidget):
     def _gamma_ok_message(self, repaired):
         if repaired:
             return f"Confirmed: GAMMA repaired ({repaired} mod(s)) and verified successfully."
-        return "Confirmed: Anomaly and GAMMA verified successfully."
+        return "Source verification passed for checked files. Extra user files and mutable settings are excluded."
 
     def _finish_with_issues(self):
         plan = self._repair_plan
@@ -2315,6 +2343,7 @@ class InstallPage(QWidget):
         profile = self.window.settings.active_profile
         if profile is None:
             raise RuntimeError("No active profile")
+        repair_catalogue(self._repair_records)
         quarantined = []
         failed: list[str] = []
         for folder in self._repair_plan.repairable:
@@ -2325,7 +2354,9 @@ class InstallPage(QWidget):
             try:
                 quarantined.append(
                     quarantine_mod_and_archive(
-                        profile.gamma, folder, self._repair_records.get(folder)
+                        profile.gamma, folder,
+                        self._repair_records.get(folder) if self._source_scan is not None
+                        and folder in self._source_scan.archive_bad_mods else None
                     )
                 )
             except (OSError, ValueError) as exc:
@@ -2399,12 +2430,11 @@ class InstallPage(QWidget):
         # missing if a future reordering ever reaches this stage directly.
         self.verify_progress.cancel_button.show()
         self.verify_progress.status_message(
-            "Re-downloading and re-installing broken mods..."
+            "Reinstalling selected mods from verified archives..."
         )
         self.verify_progress.log.append_line("")
         self.verify_progress.log.append_line("== Running installer (repair) ==")
-        # The installer writes the official modlist.txt over the profile's;
-        # keep the user's to put back afterwards.
+        # Keep a defensive snapshot of the user's mod list across repair.
         profile = self.window.settings.active_profile
         self._repair_modlist_path = (
             modlist_path_for(profile.gamma, profile.mo2_profile) if profile is not None else None
@@ -2412,14 +2442,31 @@ class InstallPage(QWidget):
         self._repair_modlist_snapshot = snapshot_modlist(self._repair_modlist_path)
         # Preservation flags are mandatory: a repair must never touch
         # user.ltx or MCM settings.
+        try:
+            selected = {item.folder: self._repair_records[item.folder]
+                        for item in self._quarantine_records}
+            self._repaired_folders.update(selected)
+            catalogue = repair_catalogue(selected)
+            self._repair_workspace = tempfile.TemporaryDirectory(prefix="commander-repair-")
+            catalogue_path = Path(self._repair_workspace.name) / "modpack_maker_list.txt"
+            catalogue_path.write_text(catalogue, encoding="utf-8")
+        except (OSError, ValueError, KeyError) as exc:
+            self._on_repair_install_finished(1, f"Error: {exc}")
+            return
+        self.verify_progress.log.append_line(
+            f"Repairing {len(selected)} selected mod(s), then reapplying shared GAMMA patches."
+        )
         runner = CommandRunner(
-            cli_command(_repair_install_args(), progress_interval_ms=200),
+            cli_command(_repair_install_args(str(catalogue_path)), progress_interval_ms=200),
             parent=self,
         )
         runner.line.connect(self._on_verify_line)
         runner.finished.connect(self._on_repair_install_finished)
         runner.cancelled.connect(self._on_repair_install_cancelled)
         self._verify_runner = runner
+        self.verify_progress.set_runner(runner)
+        self.verify_progress.moddb_access.reset()
+        self.verify_progress.moddb_access.start()
         self._repair_runner = runner
         runner.start()
 
@@ -2434,9 +2481,7 @@ class InstallPage(QWidget):
             self.verify_progress.log.append_line(note)
 
     def _on_repair_install_finished(self, rc, output):
-        # A cancelled repair must not fall through to the post-scan: that scan
-        # re-baselines the MD5 manifest and would record the broken state as
-        # the new reference.
+        # A cancelled repair must not start another lengthy verification pass.
         if self._repair_runner is not None and self._repair_runner.was_cancelled:
             return
         self._restore_user_modlist()
@@ -2457,10 +2502,13 @@ class InstallPage(QWidget):
                 summary="Repair failed",
             )
             return
-        # The installer succeeded, but that alone doesn't prove each mod
-        # was reinstalled: keep the new copy where one exists and put the
-        # old one back where it doesn't (see settle_quarantine).
-        settled = settle_quarantine(self._quarantine_records)
+        self.verify_progress.moddb_access.finish()
+        self._start_post_scan()
+
+    def _settle_verified_repair(self):
+        newly_installed = [item.folder for item in self._quarantine_records if not item.items]
+        settled = settle_quarantine(item for item in self._quarantine_records if item.items)
+        settled.reinstalled.extend(newly_installed)
         self._quarantine_records = []
         if settled.restored:
             self.verify_progress.log.append_line(
@@ -2473,12 +2521,6 @@ class InstallPage(QWidget):
         for line in settled.failures:
             self.verify_progress.log.append_line(f"WARNING: {line}")
         self._repair_quarantined_count = len(settled.reinstalled)
-        # Leftovers from an older, interrupted run can go now - but never
-        # while something just failed to move back: that copy may be the
-        # only one left.
-        if not any("->" in line for line in settled.failures):
-            purge_quarantine(self.window.settings.active_profile.gamma)
-        self._start_post_scan()
 
     def _on_repair_install_cancelled(self):
         self._restore_user_modlist()
@@ -2496,6 +2538,9 @@ class InstallPage(QWidget):
         self.verify_progress.status_message("Re-checking GAMMA mods...")
         self.verify_progress.log.append_line("")
         self.verify_progress.log.append_line("== Re-checking after repair ==")
+        self.verify_progress.set_runner(None)
+        self.verify_progress.moddb_access.reset()
+        self.verify_progress.moddb_access.start()
         task = StreamTask(self._run_post_scan, parent=self)
         task.line.connect(self._on_gamma_verify_progress)
         task.result.connect(self._on_post_scan_done)
@@ -2507,16 +2552,8 @@ class InstallPage(QWidget):
         profile = self.window.settings.active_profile
         if profile is None:
             raise RuntimeError("No active profile")
-        post = scan_mods_md5(
-            profile.gamma,
-            on_progress=(
-                lambda done, total, size: report(
-                    f"MD5 hashing {done}/{total} files ({size})"
-                )
-            ),
-            cancel=self._scan_cancel,
-            rebaseline=False,
-        )
+        records = self._source_records
+        post = self._scan_sources(profile, records, report)
         if post.cancelled:
             return (post, None)
         report("Re-checking GAMMA mods are present...")
@@ -2529,14 +2566,11 @@ class InstallPage(QWidget):
                 )
             ),
         )
-        if post.problems == 0 and presence.problems == 0:
-            # Only establish a new baseline after both the content and presence
-            # checks have passed. A failed repair must never bless corruption.
-            scan_mods_md5(profile.gamma, cancel=self._scan_cancel, rebaseline=True)
         return (post, presence)
 
     def _on_post_scan_done(self, result):
         post, presence = result
+        self._source_scan = post
         for line in post.lines():
             self.verify_progress.log.append_line(line)
         if presence is not None:
@@ -2553,13 +2587,16 @@ class InstallPage(QWidget):
         remaining = post.problems + (presence.problems if presence is not None else 0)
         self._gamma_repair_done = True
         self._gamma_remaining_issues = remaining
-        if remaining == 0:
+        if remaining == 0 and post.complete:
+            if self._quarantine_records:
+                self._settle_verified_repair()
+                repaired = self._repair_quarantined_count
             self.verify_progress.log.append_line(
                 f"GAMMA repair verified clean ({repaired} mod(s) reinstalled)."
             )
         else:
             self.verify_progress.log.append_line(
-                f"{remaining} problem(s) remain after repair."
+                f"{remaining} problem(s) remain after repair. Backups are retained in mods/.verify-quarantine."
             )
         # Route through the pipeline so a pending Anomaly repair can still
         # run before the final verdict is delivered.
@@ -2575,6 +2612,12 @@ class InstallPage(QWidget):
 
     def _finish_verify(self, ok, message, summary, baseline_created=False):
         self.verify_button.setEnabled(True)
+        self.verify_progress.set_runner(None)
+        if self._repair_workspace is not None:
+            self._repair_workspace.cleanup()
+            self._repair_workspace = None
+        self._source_references = VerificationReferences()
+        self.verify_progress.moddb_access.finish()
         self.verify_progress.cancel_button.hide()
         # Drop references to finished runners/tasks so a later cancel cannot
         # target an already-dead process or thread.
@@ -2595,6 +2638,8 @@ class InstallPage(QWidget):
         self.window.set_install_busy(False)
 
     def _cancel_verify(self):
+        if self._source_session is not None:
+            self._source_session.stop()
         if self._verify_runner is not None:
             self._verify_runner.cancel()
         if self._scan_cancel is not None:

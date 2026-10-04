@@ -1,7 +1,7 @@
 {
-  "version": "1.35.0-commander.4",
+  "version": "1.35.0-commander.8",
   "source_repository": "https://github.com/brodrigz/stalker-gamma-cli.git",
-  "source_revision": "381e8bff2dc0c34870e50f90f2b52cf53cfdfc15",
+  "source_revision": "3d1460f09853148fede4022946954580c9b7a5a7",
   "executable": "stalker-gamma.exe",
   "archiver": "resources/7zz.exe",
   "progress_interval_option": false

@@ -693,7 +693,7 @@ class DashboardPage(QWidget):
         # own switch handler above for why).
         profile = self.settings.active_profile
         if profile is not None and profile.mo2_profile != name:
-            profile.mo2_profile = name
+            profile.select_mo2_profile(name)
             self.settings.save()
         self.refresh()
 

@@ -1827,7 +1827,6 @@ class ProgressArea(QWidget):
         from .moddb_access import ModDbAccessPanel
 
         self.moddb_access = ModDbAccessPanel(self._verify_moddb, self)
-        self.moddb_access.setVisible(os.name == "nt" and show_table)
         self.connection_notice = QLabel()
         self.connection_notice.setObjectName("info")
         self.connection_notice.setWordWrap(True)

@@ -112,14 +112,28 @@ class ProgressTable(QTableWidget):
             "Retrying": tr("Retrying"), "Resuming": tr("Resuming"),
             "Verifying": tr("Verifying archive"), "Downloaded": tr("Downloaded"),
             "Waiting for verification": tr("Waiting for verification"),
+            "Preparing download": tr("Preparing download"),
+            "Waiting for extraction": tr("Waiting for extraction"),
+            "Waiting for retry": tr("Waiting for retry"),
+            "Waiting for addons": tr("Waiting for addons"),
+            "Reconnecting": tr("Reconnecting"),
             "Failed": tr("Failed"),
         }.get(event.operation, event.operation)
         if done and event.operation in {"Extract", "Expand"}:
             status = tr("Extracted")
         self.item(row, 1).setText(status)
         self.item(row, 1).setToolTip(status)
+        waiting_hints = {
+            "Reconnecting": tr("Connection interrupted. Retrying the current link for at least 30 seconds before requesting a replacement. Saved download progress is kept."),
+            "Waiting for extraction": tr("Archive ready. Waiting for an extraction slot; downloads can continue."),
+            "Waiting for retry": tr("The previous attempt failed. Waiting for a slot to retry."),
+            "Waiting for addons": tr("Files prepared. GAMMA applies these after all addons finish installing."),
+            "Failed": tr("This addon failed after retries. Other addons can continue; see the console for the final error report."),
+        }
+        if event.operation in waiting_hints:
+            self.item(row, 1).setToolTip(waiting_hints[event.operation])
         bar = self.cellWidget(row, 2)
-        busy = event.operation in {"Queued", "Resolving", "Retrying", "Verifying"} or (
+        busy = event.operation in {"Queued", "Resolving", "Retrying", "Verifying", "Preparing download", "Waiting for retry"} or (
             event.structured and event.operation in {"Download", "Resuming"} and event.total_bytes is None
         )
         bar.setRange(0, 0 if busy else 1000)
@@ -127,7 +141,7 @@ class ProgressTable(QTableWidget):
         if not busy:
             bar.setValue(round(value * 1000))
         bar.setFormat(status if busy else f"{value:.1%}")
-        self._style_bar(bar, "complete" if done else "active")
+        self._style_bar(bar, "complete" if done else "interrupted" if event.operation == "Failed" else "active")
         detail = status
         if event.bytes_downloaded is not None:
             detail += " · " + format_size(event.bytes_downloaded)
@@ -142,7 +156,7 @@ class ProgressTable(QTableWidget):
             tr("This source reports progress without download speed.")
             if event.operation in {"Download", "Resuming"} and speed is None else ""
         )
-        if self._paused and not done:
+        if self._paused and not done and event.operation != "Failed":
             self._paint_paused(row, event)
         elif not self._timer.isActive():
             # Restarting on each update prevents the timer from firing while
@@ -162,7 +176,7 @@ class ProgressTable(QTableWidget):
         self._paused = paused
         self._timer.stop()
         for name, event in list(self._events.items()):
-            if name in self._finished:
+            if name in self._finished or event.operation == "Failed":
                 continue
             if paused:
                 self._paint_paused(self._rows[name], event)
@@ -214,7 +228,7 @@ class ProgressTable(QTableWidget):
     def mark_interrupted(self) -> None:
         self._timer.stop()
         for name, row in self._rows.items():
-            if name in self._finished:
+            if name in self._finished or self._events[name].operation == "Failed":
                 continue
             self._interrupted.add(name)
             self.item(row, 1).setText(tr("Interrupted"))

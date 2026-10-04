@@ -33,6 +33,8 @@ _BUNDLE_FORMAT = 1
 #: see module docstring.
 _PORTABLE_FIELDS = (
     "mo2_profile",
+    "mo2_singleplayer_profile",
+    "mo2_coop_profile",
     "download_threads",
     "mod_pack_maker_url",
     "mod_list_url",

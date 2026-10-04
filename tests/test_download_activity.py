@@ -113,6 +113,21 @@ def test_verification_wait_preserves_saved_progress_and_clears_speed(area):
     assert area.table.item(0, 1).text() == "Resuming"
 
 
+def test_reconnecting_keeps_partial_progress_without_stale_speed(area):
+    area.on_line(event(bytesDownloaded=50, totalBytes=100, bytesPerSecond=8192))
+    area.on_line(event(operation="Reconnecting", bytesDownloaded=50, totalBytes=100, bytesPerSecond=0))
+    assert area.table.item(0, 1).text() == "Reconnecting"
+    assert "30 seconds" in area.table.item(0, 1).toolTip()
+    assert area.table.item(0, 3).text() == "—"
+    assert area.table.cellWidget(0, 2).value() == 500
+    with patch("commander_gui.ui.download_activity.time.monotonic", return_value=10**12):
+        area.table._expire_speed()
+    assert area.table.item(0, 1).text() == "Reconnecting"
+    area.on_line(event(operation="Resuming", percent=0.6, bytesDownloaded=60, totalBytes=100, bytesPerSecond=2048))
+    assert area.table.item(0, 1).text() == "Resuming"
+    assert area.table.cellWidget(0, 2).value() == 600
+
+
 def test_resize_reset_and_console_independence(area):
     area.show()
     area.on_started()
@@ -139,6 +154,33 @@ def test_rejects_invalid_protocol(change):
 
 def test_portuguese_percentage_output_still_works():
     assert parse_progress_line("Addon | Download | 12,34% | [2/20]").percent == 0.1234
+
+
+@pytest.mark.parametrize("operation", ["Waiting for extraction", "Waiting for addons"])
+def test_prepared_addons_wait_without_appearing_finished(area, operation):
+    area.on_line(event(operation="Extract", percent=1))
+    area.on_line(event(operation=operation, percent=1))
+    assert area.table.item(0, 1).text() == operation
+    assert area.table.cellWidget(0, 2).value() == 1000
+    assert not area.table.isRowHidden(0)
+    assert "0 finished" in area.table.summary
+    area.on_line(event(operation="Complete", percent=1))
+    assert area.table.isRowHidden(0)
+
+
+def test_failure_and_retry_replace_stale_extraction_status(area):
+    area.on_line(event(operation="Extract", percent=1))
+    area.on_line(event(operation="Waiting for retry", percent=0))
+    assert area.table.item(0, 1).text() == "Waiting for retry"
+    area.on_line(event(operation="Failed", percent=0))
+    area.table.set_paused(True)
+    area.table.set_paused(False)
+    area.table.mark_interrupted()
+    assert area.table.item(0, 1).text() == "Failed"
+    assert area.table.item(0, 3).text() == "—"
+    assert not area.table.isRowHidden(0)
+    area.on_line(event(operation="Preparing download"))
+    assert area.table.item(0, 1).text() == "Preparing download"
 
 
 def test_browser_notice_survives_other_addon_progress_with_console_hidden(area):

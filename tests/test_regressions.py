@@ -653,8 +653,9 @@ class RegressionTests(unittest.TestCase):
         """Verify & Repair must never touch user.ltx or MCM settings."""
         from commander_gui.ui.install_page import _repair_install_args
 
-        args = _repair_install_args()
-        self.assertIn("--skip-extract-on-hash-match", args)
+        args = _repair_install_args("selected-mods.txt")
+        self.assertIn("--repair-only", args)
+        self.assertNotIn("--skip-extract-on-hash-match", args)
         self.assertIn("--preserve-user-settings", args)
         self.assertIn("--preserve-mcm-settings", args)
 
@@ -962,7 +963,7 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(page._verify_counts["OK"], len(overlay_files) + 1)
             self.assertEqual(page._verify_counts["CORRUPT"], 1)
             log_text = page.verify_progress.log.edit.toPlainText()
-            self.assertIn("bin/AnomalyDX11AVX.exe   | OK (GAMMA-modified, expected)", log_text)
+            self.assertIn("bin/AnomalyDX11AVX.exe   | SKIPPED (requires GAMMA source verification)", log_text)
             self.assertIn("real_problem.xml | CORRUPT", log_text)
 
             # With ONLY the known-overlay files reported CORRUPT (no real
@@ -11163,7 +11164,8 @@ class UserModsTrackerTests(unittest.TestCase):
         """
         from PySide6.QtWidgets import QApplication
 
-        from commander_gui.integrity import GammaVerifyResult, Md5ScanResult
+        from commander_gui.integrity import GammaVerifyResult
+        from commander_gui.source_integrity import SourceScanResult
         from commander_gui.repair import RepairPlan
         from commander_gui.ui.install_page import InstallPage
 
@@ -11195,8 +11197,9 @@ class UserModsTrackerTests(unittest.TestCase):
             self.assertEqual(page._repair_quarantined_count, 2)
 
             page._gamma_repair_done = True
+            page._quarantine_records = []
             result = (
-                Md5ScanResult(manifest_path=str(Path(tmp) / "gamma-md5.txt")),
+                SourceScanResult(manifest_path=str(Path(tmp) / "gamma-md5.txt")),
                 GammaVerifyResult(used_official_list=True),
             )
             with (
@@ -11605,21 +11608,21 @@ class UserModsTrackerTests(unittest.TestCase):
             page, _profile = self._make_install_page_for_repair(tmp)
             with (
                 patch("commander_gui.ui.install_page.restore_from_quarantine", return_value=[]),
-                patch("commander_gui.ui.install_page.purge_quarantine") as mock_purge,
+                patch("commander_gui.repair.purge_quarantine") as mock_purge,
                 patch.object(page, "_finish_verify"),
             ):
                 page._on_repair_install_finished(1, "Error: install failed")
             mock_purge.assert_not_called()
             self.assertEqual(page._quarantine_records, [])
 
-    def test_on_repair_install_success_purges_the_quarantine(self):
+    def test_on_repair_install_success_keeps_backups_until_source_check(self):
         with tempfile.TemporaryDirectory() as tmp:
             page, profile = self._make_install_page_for_repair(tmp)
             from commander_gui.repair import SettleResult
 
             with (
                 patch("commander_gui.ui.install_page.restore_from_quarantine") as mock_restore,
-                patch("commander_gui.ui.install_page.purge_quarantine") as mock_purge,
+                patch("commander_gui.repair.purge_quarantine") as mock_purge,
                 patch(
                     "commander_gui.ui.install_page.settle_quarantine",
                     return_value=SettleResult(reinstalled=["a", "b"]),
@@ -11627,17 +11630,17 @@ class UserModsTrackerTests(unittest.TestCase):
                 patch.object(page, "_start_post_scan"),
             ):
                 page._on_repair_install_finished(0, "Repair finished cleanly.")
-            mock_settle.assert_called_once_with(["record-a", "record-b"])
+            mock_settle.assert_not_called()
             mock_restore.assert_not_called()
-            mock_purge.assert_called_once_with(profile.gamma)
-            self.assertEqual(page._quarantine_records, [])
+            mock_purge.assert_not_called()
+            self.assertEqual(page._quarantine_records, ["record-a", "record-b"])
 
     def test_on_repair_install_cancelled_restores_quarantined_mods(self):
         with tempfile.TemporaryDirectory() as tmp:
             page, _profile = self._make_install_page_for_repair(tmp)
             with (
                 patch("commander_gui.ui.install_page.restore_from_quarantine", return_value=[]),
-                patch("commander_gui.ui.install_page.purge_quarantine") as mock_purge,
+                patch("commander_gui.repair.purge_quarantine") as mock_purge,
                 patch.object(page, "_finish_verify"),
             ):
                 page._on_repair_install_cancelled()
@@ -11653,13 +11656,14 @@ class UserModsTrackerTests(unittest.TestCase):
         attribute 'matched_records'`` unconditionally reading
         ``plan.matched_records``.
         """
-        from commander_gui.integrity import GammaVerifyResult, Md5ScanResult
+        from commander_gui.integrity import GammaVerifyResult
+        from commander_gui.source_integrity import SourceScanResult
 
         with tempfile.TemporaryDirectory() as tmp:
             page, _profile = self._make_install_page_for_repair(tmp)
             page._verify_anomaly_ok = True
             presence = GammaVerifyResult(used_official_list=True)
-            scan = Md5ScanResult(manifest_path=str(Path(tmp) / "gamma-md5.txt"))
+            scan = SourceScanResult(manifest_path=str(Path(tmp) / "gamma-md5.txt"))
             result = (presence, scan, None, {}, False, None)
             with (
                 patch.object(page, "_finish_verify") as mock_finish,

@@ -57,7 +57,7 @@ def anomaly_status(line: str) -> str | None:
     return match.group(1) if match else None
 
 
-def is_expected_gamma_overlay_corrupt(line: str, anomaly_path: str) -> bool:
+def is_expected_gamma_overlay_corrupt(line: str, anomaly_path: str, *, extra_files=()) -> bool:
     """True if ``line`` is a CORRUPT verdict for one of GAMMA's own
 
     overlay files (see GAMMA_OVERLAY_FILES) - expected to mismatch
@@ -76,7 +76,7 @@ def is_expected_gamma_overlay_corrupt(line: str, anomaly_path: str) -> bool:
     if not path_text.lower().startswith(root.lower()):
         return False
     rel = path_text[len(root) :]
-    return rel.lower() in GAMMA_OVERLAY_FILES
+    return rel.lower() in GAMMA_OVERLAY_FILES or rel.lower() in extra_files
 
 
 def format_size(num_bytes: int) -> str:
@@ -512,7 +512,7 @@ class Md5ScanResult:
         if self.created:
             out.append(
                 f"  baseline saved to {Path(self.manifest_path).name} - "
-                "run Verify Integrity again to detect changes"
+                "run Local MD5 Check again to detect changes"
             )
             return out
         if self.problems == 0:

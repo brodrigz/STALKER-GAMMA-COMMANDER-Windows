@@ -68,6 +68,12 @@ class ModDbAccessPanel(QWidget):
         self._update_attention()
 
     def _update_attention(self):
+        # Visibility follows the access session, independently of download tables
+        # or console visibility. Keep rate-limit instructions after a failed run.
+        self.setVisible(
+            self._state == "rate_limited"
+            or (self._active and self._state not in {"idle", "not_needed"})
+        )
         required = (self._active and self._state in {"required", "failed"}) or self._state == "rate_limited"
         self.setStyleSheet("#moddbAccess { background: #42331d; border: 1px solid #e9b45c; border-radius: 6px; }" if required else "")
         self.button.setText("Wait before retrying" if self._state == "rate_limited" else "Verify now in browser" if required else "Verify in browser")
@@ -119,5 +125,8 @@ class ModDbAccessPanel(QWidget):
             self.instructions.setText("Existing transfers can continue. If ModDB rejects the next link request, use Verify in browser to renew access.")
 
     def _clicked(self):
-        if self._active and self._state in {"required", "failed"} and self._verify():
-            self._set_state("verifying", "Opening the browser… Complete the challenge; Commander will continue automatically.")
+        if self._active and self._state in {"required", "failed"}:
+            if self._verify():
+                self._set_state("verifying", "Opening the browser… Complete the challenge; Commander will continue automatically.")
+            else:
+                self._set_state("idle", "No ModDB request is waiting for verification. Continue the operation; this button becomes available when ModDB requests a new cookie.")

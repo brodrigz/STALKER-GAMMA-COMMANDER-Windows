@@ -113,9 +113,19 @@ class CliWorker(QObject):
 
     @Slot()
     def run(self) -> None:
+        self._coop_maintenance = None
+        self._coop_lease = None
         try:
+            from .coop import begin_cli_maintenance
+            try:
+                self._coop_maintenance, self._coop_lease = begin_cli_maintenance(self._command)
+            except Exception as exc:  # noqa: BLE001 - always release the caller's busy state
+                self.finished.emit(SPAWN_FAILED_RC, f"Could not prepare co-op for maintenance: {exc}")
+                return
             self._run_command()
         finally:
+            if self._coop_lease is not None:
+                self._coop_lease.unlock()
             with self._pause_lock:
                 if self._paused_tree is not None:
                     try:
@@ -126,6 +136,26 @@ class CliWorker(QObject):
             if self._moddb_bridge is not None:
                 self._moddb_bridge.close()
                 self._moddb_bridge = None
+
+    def _finish(self, rc, output):
+        manager = getattr(self, "_coop_maintenance", None)
+        if manager is not None:
+            try:
+                # CLI commands may print a failure while returning zero.
+                from .settings import cli_ok
+                success = rc == 0 and not self._cancel_event.is_set() and cli_ok(rc, output, "")
+                manager.finish_maintenance(success)
+                if not success:
+                    output += "\nCo-op remains disabled until the GAMMA update/repair completes successfully."
+            except Exception as exc:  # noqa: BLE001 - report restoration failures to the UI
+                rc = SPAWN_FAILED_RC
+                output += f"\nCould not restore co-op after maintenance: {exc}"
+            self._coop_maintenance = None
+        lease = getattr(self, "_coop_lease", None)
+        if lease is not None:
+            lease.unlock()
+            self._coop_lease = None
+        self.finished.emit(rc, output)
 
     def _run_command(self) -> None:
         """Run the command, streaming stdout.
@@ -146,7 +176,7 @@ class CliWorker(QObject):
         env["COMMANDER_PROGRESS_JSON"] = "1"
         collected: deque[str] = deque(maxlen=_MAX_OUTPUT_LINES)
         if not command:
-            self.finished.emit(SPAWN_FAILED_RC, "No command specified")
+            self._finish(SPAWN_FAILED_RC, "No command specified")
             return
         try:
             if os.name == "nt":
@@ -177,7 +207,7 @@ class CliWorker(QObject):
             name = command[0] if command else "<empty>"
             message = f"Failed to start {name!r}: {exc}"
             self.line_ready.emit(message)
-            self.finished.emit(SPAWN_FAILED_RC, message)
+            self._finish(SPAWN_FAILED_RC, message)
             return
         if self._cancel_event.is_set():
             # Cancel arrived before the process spawned; apply it now.
@@ -207,10 +237,10 @@ class CliWorker(QObject):
                         proc.kill()
                     except OSError:
                         pass
-            self.finished.emit(SPAWN_FAILED_RC, _bounded_output("\n".join(collected)))
+            self._finish(SPAWN_FAILED_RC, _bounded_output("\n".join(collected)))
             return
         self._process = None
-        self.finished.emit(rc, _bounded_output("\n".join(collected)))
+        self._finish(rc, _bounded_output("\n".join(collected)))
 
     @Slot()
     def cancel(self) -> None:
